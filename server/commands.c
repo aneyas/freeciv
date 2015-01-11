@@ -341,16 +341,6 @@ static struct command commands[] = {
    N_("The AI will govern your nation but do minimal changes."), NULL,
    CMD_ECHO_NONE, VCF_NONE, 50
   },
-  {"handicapped",	ALLOW_CTRL,
-   /* TRANS: translate text between <> only */
-   N_("handicapped\n"
-      "handicapped <player-name>"),
-   N_("Set one or all AI players to 'handicapped'."),
-   N_("With no arguments, sets all AI players to skill level 'handicapped', "
-      "and sets the default level for any new AI players to 'handicapped'. "
-      "With an argument, sets the skill level for that player only."), NULL,
-   CMD_ECHO_ALL, VCF_NONE, 50
-  },
   {"novice",	ALLOW_CTRL,
    /* TRANS: translate text between <> only */
    N_("novice\n"
@@ -595,7 +585,7 @@ static struct command commands[] = {
   },
   {"reset",	ALLOW_CTRL,
    /* no translatable parameters */
-   SYN_ORIG_("reset"),
+   SYN_ORIG_("reset [game|ruleset|script|default]"),
    N_("Reset all server settings."),
    N_("Reset all settings if it is possible. The following levels are "
       "supported:\n"

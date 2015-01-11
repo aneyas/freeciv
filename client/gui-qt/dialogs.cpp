@@ -22,20 +22,17 @@
 #include <QRadioButton>
 #include <QTableWidgetItem>
 #include <QTextEdit>
-#include <QToolBox>
 
 // utility
 #include "astring.h"
 
 // common
-#include "actions.h"
 #include "city.h"
 #include "game.h"
 #include "government.h"
 #include "improvement.h"
 #include "movement.h"
 #include "nation.h"
-#include "research.h"
 
 // client
 #include "control.h"
@@ -50,8 +47,7 @@
 #include "qtg_cxxside.h"
 #include "sprite.h"
 
-static void diplomat_keep_moving_unit(QVariant data1, QVariant data2);
-static void diplomat_keep_moving_city(QVariant data1, QVariant data2);
+static void diplomat_keep_moving(QVariant data1, QVariant data2);
 static void diplomat_incite(QVariant data1, QVariant data2);
 static void spy_request_sabotage_list(QVariant data1, QVariant data2);
 static void spy_sabotage(QVariant data1, QVariant data2);
@@ -69,11 +65,6 @@ static void caravan_help_build(QVariant data1, QVariant data2);
 static void keep_moving(QVariant data1, QVariant data2);
 static void caravan_keep_moving(QVariant data1, QVariant data2);
 static void pillage_something(QVariant data1, QVariant data2);
-static void action_entry(choice_dialog *cd,
-                         gen_action act,
-                         const action_probability *action_probabilities,
-                         pfcn_void func, QVariant data1,
-                         QVariant data2);
 
 static int caravan_city_id = 0;
 static int caravan_unit_id = 0;
@@ -82,31 +73,32 @@ static bool is_showing_pillage_dialog = false;
 static choice_dialog *caravan_dialog = NULL;
 static races_dialog* race_dialog;
 static bool is_race_dialog_open = false;
-static bool is_more_user_input_needed = FALSE;
 
 /***************************************************************************
  Constructor for selecting nations
 ***************************************************************************/
-races_dialog::races_dialog(struct player *pplayer, QWidget * parent):QDialog(parent)
+races_dialog::races_dialog(struct player *pplayer,
+                           QWidget * parent) : QDialog(parent)
 {
-  struct nation_group *group;
   int i;
   QGridLayout *qgroupbox_layout;
   QGroupBox *no_name;
-  QWidget *tab_widget;
   QTableWidgetItem *item;
   QPixmap *pix;
   QHeaderView *header;
   QSize size;
   QString title;
+  QLabel *ns_label;
 
   setAttribute(Qt::WA_DeleteOnClose);
   is_race_dialog_open = true;
   main_layout = new QGridLayout;
-  nation_tabs = new QToolBox(parent);
+  nation_tabs = new QTableWidget();
   selected_nation_tabs = new QTableWidget;
-  styles = new QTableWidget;
+  city_styles = new QTableWidget;
   ok_button = new QPushButton;
+  qnation_set =  new QComboBox;
+  ns_label = new QLabel;
   tplayer = pplayer;
 
   selected_nation = -1;
@@ -120,15 +112,27 @@ races_dialog::races_dialog(struct player *pplayer, QWidget * parent):QDialog(par
   selected_nation_tabs->horizontalHeader()->setVisible(false);
   selected_nation_tabs->setProperty("showGrid", "true");
   selected_nation_tabs->setEditTriggers(QAbstractItemView::NoEditTriggers);
+  selected_nation_tabs->setShowGrid(false);
+  selected_nation_tabs->setAlternatingRowColors(true);
 
-  styles->setRowCount(0);
-  styles->setColumnCount(2);
-  styles->setSelectionMode(QAbstractItemView::SingleSelection);
-  styles->verticalHeader()->setVisible(false);
-  styles->horizontalHeader()->setVisible(false);
-  styles->setProperty("showGrid", "false");
-  styles->setProperty("selectionBehavior", "SelectRows");
-  styles->setEditTriggers(QAbstractItemView::NoEditTriggers);
+  nation_tabs->setRowCount(0);
+  nation_tabs->setColumnCount(1);
+  nation_tabs->setSelectionMode(QAbstractItemView::SingleSelection);
+  nation_tabs->verticalHeader()->setVisible(false);
+  nation_tabs->horizontalHeader()->setVisible(false);
+  nation_tabs->setProperty("showGrid", "true");
+  nation_tabs->setEditTriggers(QAbstractItemView::NoEditTriggers);
+  nation_tabs->setShowGrid(false);
+  ns_label->setText(_("Nation Set:"));
+  city_styles->setRowCount(0);
+  city_styles->setColumnCount(2);
+  city_styles->setSelectionMode(QAbstractItemView::SingleSelection);
+  city_styles->verticalHeader()->setVisible(false);
+  city_styles->horizontalHeader()->setVisible(false);
+  city_styles->setProperty("showGrid", "false");
+  city_styles->setProperty("selectionBehavior", "SelectRows");
+  city_styles->setEditTriggers(QAbstractItemView::NoEditTriggers);
+  city_styles->setShowGrid(false);
 
   qgroupbox_layout = new QGridLayout;
   no_name = new QGroupBox(parent);
@@ -150,42 +154,48 @@ races_dialog::races_dialog(struct player *pplayer, QWidget * parent):QDialog(par
   no_name->setTitle(_("Your leader name"));
 
   /**
-   * Fill styles, no need to update them later
+   * Fill city styles, no need to update them later
    */
 
-  styles_iterate(pstyle) {
-    i = basic_city_style_for_style(pstyle);
-
-    if (i >= 0) {
-      item = new QTableWidgetItem;
-      styles->insertRow(i);
-      pix = get_sample_city_sprite(tileset, i)->pm;
-      item->setData(Qt::DecorationRole, *pix);
-      item->setData(Qt::UserRole, style_number(pstyle));
-      size.setWidth(pix->width());
-      size.setHeight(pix->height());
-      item->setSizeHint(size);
-      styles->setItem(i, 0, item);
-      item = new QTableWidgetItem;
-      item->setText(style_name_translation(pstyle));
-      styles->setItem(i, 1, item);
+  for (i = 0; i < game.control.styles_count; i++) {
+    if (city_style_has_requirements(&::city_styles[i])) {
+      continue;
     }
-  } styles_iterate_end;
-
-  header = styles->horizontalHeader();
-  header->setSectionResizeMode(QHeaderView::Stretch);
-  header->resizeSections(QHeaderView::ResizeToContents);
-  header = styles->verticalHeader();
-  header->resizeSections(QHeaderView::ResizeToContents);
-  tab_widget = new QWidget();
-  nation_tabs->addItem(tab_widget, _("All Nations"));
-  for (i = 0; i < nation_group_count(); i++) {
-    group = nation_group_by_number(i);
-    tab_widget = new QWidget();
-    nation_tabs->addItem(tab_widget, nation_group_name_translation(group));
+    item = new QTableWidgetItem;
+    city_styles->insertRow(i);
+    pix = get_sample_city_sprite(tileset, i)->pm;
+    item->setData(Qt::DecorationRole, *pix);
+    item->setData(Qt::UserRole, i);
+    size.setWidth(pix->width());
+    size.setHeight(pix->height());
+    item->setSizeHint(size);
+    city_styles->setItem(i, 0, item);
+    item = new QTableWidgetItem;
+    item->setText(city_style_name_translation(i));
+    city_styles->setItem(i, 1, item);
   }
-  connect(nation_tabs, SIGNAL(currentChanged(int)), SLOT(set_index(int)));
-  connect(styles->selectionModel(),
+  header = city_styles->horizontalHeader();
+#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
+  header->setSectionResizeMode(QHeaderView::Stretch);
+#else
+  header->setResizeMode(QHeaderView::Stretch);
+#endif
+  header->resizeSections(QHeaderView::ResizeToContents);
+  header = city_styles->verticalHeader();
+  header->resizeSections(QHeaderView::ResizeToContents);
+  nation_sets_iterate(pset) {
+    qnation_set->addItem(nation_set_name_translation(pset),
+                         nation_set_rule_name(pset));
+  } nation_sets_iterate_end;
+  /* create nation sets */
+  refresh();
+
+  connect(nation_tabs->selectionModel(),
+          SIGNAL(selectionChanged(const QItemSelection &,
+                                  const QItemSelection &)),
+          SLOT(group_selected(const QItemSelection &,
+                              const QItemSelection &)));
+  connect(city_styles->selectionModel(),
           SIGNAL(selectionChanged(const QItemSelection &,
                                   const QItemSelection &)),
           SLOT(style_selected(const QItemSelection &,
@@ -197,11 +207,18 @@ races_dialog::races_dialog(struct player *pplayer, QWidget * parent):QDialog(par
                               const QItemSelection &)));
   connect(leader_name, SIGNAL(currentIndexChanged(int)),
           SLOT(leader_selected(int)));
+  connect(qnation_set, SIGNAL(currentIndexChanged(int)),
+          SLOT(nationset_changed(int)));
+  connect(nation_tabs->selectionModel(),
+          SIGNAL(selectionChanged(const QItemSelection &,
+                                  const QItemSelection &)),
+          SLOT(group_selected(const QItemSelection &,
+                              const QItemSelection &)));
 
   ok_button = new QPushButton;
   ok_button->setText(_("Cancel"));
   connect(ok_button, SIGNAL(pressed()), SLOT(cancel_pressed()));
-  main_layout->addWidget(ok_button, 8, 1, 1, 1);
+  main_layout->addWidget(ok_button, 8, 2, 1, 1);
   random_button = new QPushButton;
   random_button->setText(_("Random"));
   connect(random_button, SIGNAL(pressed()), SLOT(random_pressed()));
@@ -209,16 +226,23 @@ races_dialog::races_dialog(struct player *pplayer, QWidget * parent):QDialog(par
   ok_button = new QPushButton;
   ok_button->setText(_("Ok"));
   connect(ok_button, SIGNAL(pressed()), SLOT(ok_pressed()));
-  main_layout->addWidget(ok_button, 8, 2, 1, 1);
-  main_layout->addWidget(no_name, 0, 2, 2, 1);
-  main_layout->addWidget(nation_tabs, 0, 0, 6, 1);
-  main_layout->addWidget(styles, 2, 2, 4, 1);
-  main_layout->addWidget(description, 6, 0, 2, 3);
-  main_layout->addWidget(selected_nation_tabs, 0, 1, 6, 1);
+  main_layout->addWidget(ok_button, 8, 3, 1, 1);
+  main_layout->addWidget(no_name, 0, 3, 2, 1);
+  if (nation_set_count() > 1) {
+    main_layout->addWidget(ns_label, 0, 0, 1, 1);
+    main_layout->addWidget(qnation_set, 0, 1, 1, 1);
+    main_layout->addWidget(nation_tabs, 1, 0, 6, 2);
+  } else {
+    main_layout->addWidget(nation_tabs, 0, 0, 6, 2);
+  }
+  main_layout->addWidget(city_styles, 2, 3, 4, 1);
+  main_layout->addWidget(description, 6, 0, 2, 4);
+  main_layout->addWidget(selected_nation_tabs, 0, 2, 6, 1);
 
   setLayout(main_layout);
   set_index(0);
   update();
+  set_index(-99);
 
   if (C_S_RUNNING == client_state()) {
     title = _("Edit Nation");
@@ -228,6 +252,7 @@ races_dialog::races_dialog(struct player *pplayer, QWidget * parent):QDialog(par
     title = _("Pick Nation");
   }
 
+  update_nationset_combo();
   setWindowTitle(title);
 }
 
@@ -240,31 +265,126 @@ races_dialog::~races_dialog()
 }
 
 /***************************************************************************
-  Sets new nations' group by given index
+  Sets first index to call update of nation list
+***************************************************************************/
+void races_dialog::refresh()
+{
+  struct nation_group *group;
+  QTableWidgetItem *item;
+  QHeaderView *header;
+  int i;
+  int count;
+
+  nation_tabs->clearContents();
+  nation_tabs->setRowCount(0);
+  nation_tabs->insertRow(0);
+  item =  new QTableWidgetItem;
+  item->setText(_("All nations"));
+  item->setData(Qt::UserRole, -99);
+  nation_tabs->setItem(0, 0, item);
+
+  for (i = 1; i < nation_group_count() + 1; i++) {
+    group = nation_group_by_number(i - 1);
+    count = 0;
+    /* checking if group is empty */
+    nations_iterate(pnation) {
+      if (!is_nation_playable(pnation)
+          || !is_nation_pickable(pnation)
+          || !nation_is_in_group(pnation, group)) {
+        continue;
+      }
+      count ++;
+    } nations_iterate_end;
+    if (count == 0) {
+      continue;
+    }
+    nation_tabs->insertRow(i);
+    item =  new QTableWidgetItem;
+    item->setData(Qt::UserRole, i - 1);
+    item->setText(nation_group_name_translation(group));
+    nation_tabs->setItem(i, 0, item);
+  }
+  header = nation_tabs->horizontalHeader();
+  header->resizeSections(QHeaderView::Stretch);
+  header = nation_tabs->verticalHeader();
+  header->resizeSections(QHeaderView::ResizeToContents);
+  set_index(-99);
+}
+
+/***************************************************************************
+  Updates nation_set combo ( usually called from option change )
+***************************************************************************/
+void races_dialog::update_nationset_combo()
+{
+  struct option *popt;
+  struct nation_set *s;
+
+  popt = optset_option_by_name(server_optset, "nationset");
+  if (popt) {
+    s = nation_set_by_setting_value(option_str_get(popt));
+    qnation_set->setCurrentIndex(nation_set_index(s));
+    qnation_set->setToolTip(nation_set_description(s));
+  }
+}
+
+/***************************************************************************
+  Selected group of nation
+***************************************************************************/
+void races_dialog::group_selected(const QItemSelection &sl,
+                                  const QItemSelection &ds)
+{
+  QModelIndexList indexes = sl.indexes();
+  QModelIndex index ;
+
+  if (indexes.isEmpty()) {
+    return;
+  }
+  index = indexes.at(0);
+  set_index(index.row());
+}
+
+
+/***************************************************************************
+  Sets new nations' group by current current selection,
+  index is used only when there is no current selection.
 ***************************************************************************/
 void races_dialog::set_index(int index)
 {
   QTableWidgetItem *item;
   QPixmap *pix;
+  QFont f;
   struct nation_group *group;
-  int i = 0;
+  int i;
   struct sprite *s;
   QHeaderView *header;
-
   selected_nation_tabs->clearContents();
   selected_nation_tabs->setRowCount(0);
 
-  group = nation_group_by_number(index - 1);
+  last_index = 0;
+  i = nation_tabs->currentRow();
+  if (i != -1) {
+    item = nation_tabs->item(i, 0);
+    index = item->data(Qt::UserRole).toInt();
+  }
+
+  group = nation_group_by_number(index);
+  i = 0;
   nations_iterate(pnation) {
-    if (!is_nation_playable(pnation) || !is_nation_pickable(pnation)) {
+    if (!is_nation_playable(pnation)
+        || !is_nation_pickable(pnation)) {
       continue;
     }
-    if (!nation_is_in_group(pnation, group) && index != 0) {
+    if (!nation_is_in_group(pnation, group) && index != -99) {
       continue;
     }
     item = new QTableWidgetItem;
     selected_nation_tabs->insertRow(i);
     s = get_nation_flag_sprite(tileset, pnation);
+    if (pnation->player) {
+      f = item->font();
+      f.setStrikeOut(true);
+      item->setFont(f);
+    }
     pix = s->pm;
     item->setData(Qt::DecorationRole, *pix);
     item->setData(Qt::UserRole, nation_number(pnation));
@@ -317,15 +437,15 @@ void races_dialog::nation_selected(const QItemSelection &selected,
    * select style for nation
    */
 
-  style = style_number(style_of_nation(nation_by_number(selected_nation)));
+  style = city_style_of_nation(nation_by_number(selected_nation));
   qvar = qvar.fromValue<int>(style);
   item = new QTableWidgetItem;
 
-  for (ind = 0; ind < styles->rowCount(); ind++) {
-    item = styles->item(ind, 0);
+  for (ind = 0; ind < city_styles->rowCount(); ind++) {
+    item = city_styles->item(ind, 0);
 
     if (item->data(Qt::UserRole) == qvar) {
-      styles->selectRow(ind);
+      city_styles->selectRow(ind);
     }
   }
 }
@@ -354,8 +474,7 @@ void races_dialog::style_selected(const QItemSelection &selected,
 ***************************************************************************/
 void races_dialog::leader_selected(int index)
 {
-  if (leader_name->itemData(index).toBool())
-  {
+  if (leader_name->itemData(index).toBool()) {
     is_male->setChecked(true);
     is_female->setChecked(false);
     selected_sex=0;
@@ -383,12 +502,18 @@ void races_dialog::ok_pressed()
   }
 
   if (selected_style == -1) {
-    output_window_append(ftc_client, _("You must select your style."));
+    output_window_append(ftc_client, _("You must select your city style."));
     return;
   }
 
   if (leader_name->currentText().length() == 0) {
     output_window_append(ftc_client, _("You must type a legal name."));
+    return;
+  }
+
+  if (nation_by_number(selected_nation)->player != NULL) {
+    output_window_append(ftc_client,
+                         _("Nation has been chosen by other player"));
     return;
   }
   dsend_packet_nation_select_req(&client.conn, player_number(tplayer),
@@ -415,9 +540,15 @@ notify_dialog::notify_dialog(const char *caption, const char *headline,
   cw = new close_widget(this);
   cw->put_to_corner();
 
-  qcaption = QString::fromLatin1(caption);
-  qheadline = QString::fromLatin1(headline);
-  qlines = QString::fromLatin1(lines);
+#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
+  qcaption = QString(caption);
+  qheadline = QString(headline);
+  qlines = QString(lines);
+#else
+  qcaption = QString::fromAscii(caption);
+  qheadline = QString::fromAscii(headline);
+  qlines = QString::fromAscii(lines);
+#endif
   qlist = qlines.split("\n");
   small_font =::gui()->fc_fonts.get_font("gui_qt_font_notify_label");
   x = 0;
@@ -545,6 +676,75 @@ void races_dialog::random_pressed()
   delete this;
 }
 
+/***************************************************************************
+  Notify goto dialog constructor
+***************************************************************************/
+notify_goto::notify_goto(const char *headline, const char *lines,
+                         const struct text_tag_list *tags, tile *ptile,
+                         QWidget *parent): QMessageBox(parent)
+{
+  setAttribute(Qt::WA_DeleteOnClose);
+  goto_but = this->addButton(_("Goto Location"), QMessageBox::ActionRole);
+  goto_but->setIcon(style()->standardIcon(
+                      QStyle::SP_ToolBarHorizontalExtensionButton));
+  inspect_but = this->addButton(_("Inspect City"), QMessageBox::ActionRole);
+  inspect_but->setIcon(style()->standardIcon(QStyle::SP_FileDialogToParent));
+
+  close_but = this->addButton(QMessageBox::Close);
+  gtile = ptile;
+  if (!gtile) {
+    goto_but->setDisabled(true);
+    inspect_but->setDisabled(true);
+  } else {
+    struct city *pcity = tile_city(gtile);
+    inspect_but->setEnabled(NULL != pcity
+                            && city_owner(pcity) == client.conn.playing);
+  }
+  setWindowTitle(headline);
+  setText(lines);
+  connect(goto_but, SIGNAL(pressed()), SLOT(goto_tile()));
+  connect(inspect_but, SIGNAL(pressed()), SLOT(inspect_city()));
+  connect(close_but, SIGNAL(pressed()), SLOT(close()));
+  show();
+}
+
+/***************************************************************************
+  Clicked goto tile in notify goto dialog
+***************************************************************************/
+void notify_goto::goto_tile()
+{
+  center_tile_mapcanvas(gtile);
+  close();
+}
+
+/***************************************************************************
+  Clicked inspect city in notify goto dialog
+***************************************************************************/
+void notify_goto::inspect_city()
+{
+  struct city *pcity = tile_city(gtile);
+  if (pcity) {
+    qtg_real_city_dialog_popup(pcity);
+  }
+  close();
+}
+
+/***************************************************************************
+  User changed nation_set
+***************************************************************************/
+void races_dialog::nationset_changed(int index)
+{
+  QString rule_name;
+  char *rn;
+  struct option *poption = optset_option_by_name(server_optset, "nationset");
+  rule_name = qnation_set->currentData().toString();
+  rn = rule_name.toLocal8Bit().data();
+  if (nation_set_by_setting_value(option_str_get(poption))
+      != nation_set_by_rule_name(rn)) {
+    option_str_set(poption, rn);
+  }
+}
+
 /**************************************************************************
   Popup a dialog to display information about an event that has a
   specific location.  The user should be given the option to goto that
@@ -554,7 +754,9 @@ void popup_notify_goto_dialog(const char *headline, const char *lines,
                               const struct text_tag_list *tags,
                               struct tile *ptile)
 {
-  /* PORTME */
+  notify_goto *ask = new notify_goto(headline, lines, tags, ptile,
+                                     gui()->central_wdg);
+  ask->show();
 }
 
 /**************************************************************************
@@ -562,7 +764,7 @@ void popup_notify_goto_dialog(const char *headline, const char *lines,
 **************************************************************************/
 void popup_connect_msg(const char *headline, const char *message)
 {
-  /* PORTME */
+  qDebug() << Q_FUNC_INFO << "PORTME";
 }
 
 /**************************************************************************
@@ -581,8 +783,12 @@ void popup_notify_dialog(const char *caption, const char *headline,
 **************************************************************************/
 void popup_races_dialog(struct player *pplayer)
 {
-  race_dialog = new races_dialog(pplayer);
-  race_dialog->show();
+  if (!is_race_dialog_open) {
+    race_dialog = new races_dialog(pplayer, gui()->central_wdg);
+    is_race_dialog_open = true;
+    race_dialog->show();
+  }
+  race_dialog->showNormal();
 }
 
 /**************************************************************************
@@ -616,12 +822,23 @@ void unit_select_dialog_update_real(void)
 }
 
 /**************************************************************************
+  Updates nationset combobox
+**************************************************************************/
+void update_nationset_combo()
+{
+  if (is_race_dialog_open) {
+    race_dialog->update_nationset_combo();
+  }
+}
+
+/**************************************************************************
   The server has changed the set of selectable nations.
 **************************************************************************/
-void races_update_pickable(void)
-{ 
-  /* FIXME handle this properly */
-  popdown_races_dialog();
+void races_update_pickable(bool nationset_change)
+{
+  if (is_race_dialog_open){
+    race_dialog->refresh();
+  }
 }
 
 /**************************************************************************
@@ -630,8 +847,9 @@ void races_update_pickable(void)
 **************************************************************************/
 void races_toggles_set_sensitive(void)
 {
-  /* PORTME */
-  /* maybe just emit signal about chosen toolbox ? */
+  if (is_race_dialog_open) {
+    race_dialog->refresh();
+  }
 }
 
 /**************************************************************************
@@ -662,18 +880,72 @@ void popup_revolution_dialog(struct government *government)
   }
 }
 
+/**************************************************************************
+  Constructor for choice_dialog_button_data
+**************************************************************************/
+choice_dialog_button_data::choice_dialog_button_data(QPushButton *button,
+                                                     pfcn_void func,
+                                                     QVariant data1,
+                                                     QVariant  data2)
+{
+  this->button = button;
+  this->func = func;
+  this->data1 = data1;
+  this->data2 = data2;
+}
+
+/**************************************************************************
+  Destructor for choice_dialog_button_data
+**************************************************************************/
+choice_dialog_button_data::~choice_dialog_button_data()
+{
+  /* Don't delete the stored data! */
+}
+
+/**************************************************************************
+  Get the button it self.
+**************************************************************************/
+QPushButton *choice_dialog_button_data::getButton()
+{
+  return button;
+}
+
+/**************************************************************************
+  Get the function to call when the button is pressed.
+**************************************************************************/
+pfcn_void choice_dialog_button_data::getFunc()
+{
+  return func;
+}
+
+/**************************************************************************
+  Get the first piece of data to feed the function when the button is
+  pressed.
+**************************************************************************/
+QVariant choice_dialog_button_data::getData1()
+{
+  return data1;
+}
+
+/**************************************************************************
+  Get the second piece of data to feed the function when the button is
+  pressed.
+**************************************************************************/
+QVariant choice_dialog_button_data::getData2()
+{
+  return data2;
+}
+
 /***************************************************************************
   Constructor for choice_dialog
 ***************************************************************************/
 choice_dialog::choice_dialog(const QString title, const QString text,
-                             QWidget *parent,
-                             void (*run_on_close)(void)): QWidget(parent)
+                             QWidget *parent): QWidget(parent)
 {
   QLabel *l = new QLabel(text);
 
   signal_mapper = new QSignalMapper(this);
   layout = new QVBoxLayout(this);
-  this->run_on_close = run_on_close;
 
   layout->addWidget(l);
   setWindowFlags(Qt::Dialog);
@@ -693,10 +965,6 @@ choice_dialog::~choice_dialog()
   delete signal_mapper;
   gui()->set_diplo_dialog(NULL);
 
-  if (run_on_close) {
-    run_on_close();
-    run_on_close = NULL;
-  }
 }
 
 /***************************************************************************
@@ -713,7 +981,7 @@ void choice_dialog::set_layout()
   Adds new action for choice dialog
 ***************************************************************************/
 void choice_dialog::add_item(QString title, pfcn_void func, QVariant data1,
-                             QVariant data2, QString tool_tip = "")
+                             QVariant data2)
 {
    QPushButton *button = new QPushButton(title);
    connect(button, SIGNAL(clicked()), signal_mapper, SLOT(map()));
@@ -721,11 +989,6 @@ void choice_dialog::add_item(QString title, pfcn_void func, QVariant data1,
    func_list.append(func);
    data1_list.append(data1);
    data2_list.append(data2);
-
-   if (!tool_tip.isEmpty()) {
-     button->setToolTip(tool_tip);
-   }
-
    layout->addWidget(button);
 }
 
@@ -759,6 +1022,67 @@ void choice_dialog::execute_action(const int action)
   pfcn_void func = func_list.at(action);
   func(data1_list.at(action), data2_list.at(action));
   close();
+}
+
+/**************************************************************************
+  Put the button in the stack and temporarily remove it. When
+  unstack_all_buttons() is called all buttons in the stack will be added
+  to the end of the dialog.
+
+  Can be used to place a button below existing buttons or below buttons
+  added while it was in the stack.
+**************************************************************************/
+void choice_dialog::stack_button(const int button_number)
+{
+  choice_dialog_button_data *data = NULL;
+
+  fc_assert_msg(0 <= button_number, "Invalid button number");
+  if (0 > button_number) {
+    return;
+  }
+
+  /* Start with grabbing the data. */
+  data = new choice_dialog_button_data(
+      qobject_cast<QPushButton *>(layout
+                                  ->itemAt(button_number + 1)
+                                  ->widget()),
+      func_list.at(button_number),
+      data1_list.at(button_number), data2_list.at(button_number));
+
+  /* Store the data in the stack. */
+  last_buttons_stack.append(data);
+
+  /* Temporary remove the button so it will end up below buttons added
+   * before unstack_all_buttons() is called. */
+  layout->removeWidget(data->getButton());
+
+  /* The old mappings may not be valid after reinsertion. */
+  signal_mapper->removeMappings(data->getButton());
+
+  /* Synchronize the lists with the layout. */
+  func_list.removeAt(button_number);
+  data1_list.removeAt(button_number);
+  data2_list.removeAt(button_number);
+}
+
+/**************************************************************************
+  Put all the buttons in the stack back to the dialog. They will appear
+  after any other buttons. See stack_button()
+**************************************************************************/
+void choice_dialog::unstack_all_buttons()
+{
+  while (!last_buttons_stack.isEmpty()) {
+    choice_dialog_button_data *data = last_buttons_stack.takeLast();
+
+    /* Restore mapping. */
+    signal_mapper->setMapping(data->getButton(), func_list.count());
+
+    /* Reinsert the button below the other buttons. */
+    func_list.append(data->getFunc());
+    data1_list.append(data->getData1());
+    data2_list.append(data->getData2());
+    layout->addWidget(data->getButton());
+  }
 }
 
 /***************************************************************************
@@ -842,7 +1166,8 @@ void popup_caravan_dialog(struct unit *punit,
   qv2 = punit->id;
   caravan_city_id = pdestcity->id;
   caravan_unit_id = punit->id;
-  can_trade = can_cities_trade(phomecity, pdestcity);
+  can_trade = (unit_has_type_flag(punit, UTYF_TRADE_ROUTE)
+               && can_cities_trade(phomecity, pdestcity));
   can_establish = can_trade
                   && can_establish_trade_route(phomecity, pdestcity);
   destcity = game_city_by_number(pdestcity->id);
@@ -850,18 +1175,18 @@ void popup_caravan_dialog(struct unit *punit,
 
   if (destcity && caravan && unit_can_help_build_wonder(caravan, destcity)) {
     can_wonder = true;
-    fc_snprintf(buf2, sizeof(buf2), _("Help build _Wonder (%d remaining)"),
+    fc_snprintf(buf2, sizeof(buf2), _("Help build Wonder (%d remaining)"),
                 impr_build_shield_cost(destcity->production.value.building)
                 - destcity->shield_stock);
     wonder = QString(buf2);
   } else {
     can_wonder = false;
-    wonder = QString(_("Help build _Wonder"));
+    wonder = QString(_("Help build Wonder"));
   }
 
   if (can_trade) {
     func = caravan_establish_trade;
-    str = can_establish ? QString(_("Establish _Trade route")) :
+    str = can_establish ? QString(_("Establish Trade route")) :
           QString(_("Enter Marketplace"));
     caravan_dialog->add_item(str, func, qv1, qv2);
   }
@@ -870,8 +1195,7 @@ void popup_caravan_dialog(struct unit *punit,
     caravan_dialog->add_item(wonder, func, qv1, qv2);
   }
   func = caravan_keep_moving;
-  caravan_dialog->add_item(QString(_("Keep moving")),
-                           func, qv1, qv2);
+  caravan_dialog->add_item(QString(_("Keep moving")), func, qv1, qv2);
 
   caravan_dialog->set_layout();
   caravan_dialog->show_me();
@@ -893,195 +1217,123 @@ bool caravan_dialog_is_open(int *unit_id, int *city_id)
 }
 
 /**************************************************************************
-  Move the queue of diplomats that need user input forward unless the
-  current diplomat will need more input.
-**************************************************************************/
-static void diplomat_queue_handle_primary(void)
-{
-  if (!is_more_user_input_needed) {
-    choose_action_queue_next();
-  }
-}
-
-/**************************************************************************
-  Move the queue of diplomats that need user input forward since the
-  current diplomat got the extra input that was required.
-**************************************************************************/
-static void diplomat_queue_handle_secondary(void)
-{
-  /* Stop waiting. Move on to the next queued diplomat. */
-  is_more_user_input_needed = FALSE;
-  diplomat_queue_handle_primary();
-}
-
-/**************************************************************************
   Popup a dialog giving a diplomatic unit some options when moving into
   the target tile.
 **************************************************************************/
-void popup_diplomat_dialog(struct unit *punit, struct tile *dest_tile,
-                           const action_probability *action_probabilities)
+void popup_diplomat_dialog(struct unit *punit, struct tile *dest_tile)
 {
   struct city *pcity;
   struct unit *ptunit;
   struct astring title = ASTRING_INIT, text = ASTRING_INIT;
   int diplomat_id;
+  int diplomat_target_id;
   QVariant qv1, qv2;
   pfcn_void func;
 
-  /* Could be caused by the server failing to reply to a request for more
-   * information or a bug in the client code. */
-  fc_assert_msg(!is_more_user_input_needed,
-                "Diplomat queue problem. Is another diplomat window open?");
-
-  /* No extra input is required as no action has been chosen yet. */
-  is_more_user_input_needed = FALSE;
-
-  astr_set(&title,
-           /* TRANS: %s is a unit name, e.g., Spy */
-           _("Choose Your %s's Strategy"), unit_name_translation(punit));
-  astr_set(&text,
-           /* TRANS: %s is a unit name, e.g., Diplomat, Spy */
-           _("Your %s is waiting for your command."),
-           unit_name_translation(punit));
-  choice_dialog *cd = new choice_dialog(astr_str(&title),
-                                        astr_str(&text),
-                                        gui()->game_tab_widget,
-                                        diplomat_queue_handle_primary);
-  diplomat_id = punit->id;
-  qv1 = punit->id;
-  cd->unit_id = diplomat_id;
-
   if ((pcity = tile_city(dest_tile))) {
     /* Spy/Diplomat acting against a city */
-    gui()->set_current_unit(diplomat_id, pcity->id, ATK_CITY);
+    diplomat_target_id = pcity->id;
+    diplomat_id = punit->id;
+    gui()->set_current_unit(diplomat_id, diplomat_target_id);
+    astr_set(&title,
+             /* TRANS: %s is a unit name, e.g., Spy */
+             _("Choose Your %s's Strategy"), unit_name_translation(punit));
+    astr_set(&text,
+             _("Your %s has arrived at %s.\nWhat is your command?"),
+             unit_name_translation(punit),
+             city_name(pcity));
+    choice_dialog *cd = new choice_dialog(astr_str(&title),
+                                                   astr_str(&text),
+                                                   gui()->game_tab_widget);
+    qv1 = punit->id;
     qv2 = pcity->id;
-
-    action_entry(cd,
-                 ACTION_ESTABLISH_EMBASSY,
-                 action_probabilities,
-                 diplomat_embassy, qv1, qv2);
-
-    action_entry(cd,
-                 ACTION_SPY_INVESTIGATE_CITY,
-                 action_probabilities,
-                 diplomat_investigate, qv1, qv2);
-
-    action_entry(cd,
-                 ACTION_SPY_POISON,
-                 action_probabilities,
-                 spy_poison, qv1, qv2);
-
-    action_entry(cd,
-                 ACTION_SPY_SABOTAGE_CITY,
-                 action_probabilities,
-                 diplomat_sabotage, qv1, qv2);
-
-    action_entry(cd,
-                 ACTION_SPY_TARGETED_SABOTAGE_CITY,
-                 action_probabilities,
-                 spy_request_sabotage_list, qv1, qv2);
-
-    action_entry(cd,
-                 ACTION_SPY_STEAL_TECH,
-                 action_probabilities,
-                 diplomat_steal, qv1, qv2);
-
-    action_entry(cd,
-                 ACTION_SPY_TARGETED_STEAL_TECH,
-                 action_probabilities,
-                 spy_steal, qv1, qv2);
-
-    action_entry(cd,
-                 ACTION_SPY_INCITE_CITY,
-                 action_probabilities,
-                 diplomat_incite, qv1, qv2);
-  }
-
-  if ((ptunit = unit_list_get(dest_tile->units, 0))) {
-    /* Spy/Diplomat acting against a unit */
-
-    gui()->set_current_unit(diplomat_id, ptunit->id, ATK_UNIT);
-    qv2 = ptunit->id;
-
-    action_entry(cd,
-                 ACTION_SPY_BRIBE_UNIT,
-                 action_probabilities,
-                 diplomat_bribe, qv1, qv2);
-
-    action_entry(cd,
-                 ACTION_SPY_SABOTAGE_UNIT,
-                 action_probabilities,
-                 spy_sabotage_unit, qv1, qv2);
-  }
-
-  if (pcity) {
-    qv2 = pcity->id;
+    cd->unit_id = diplomat_id;
+    if (diplomat_can_do_action(punit, DIPLOMAT_EMBASSY, dest_tile)) {
+      func = diplomat_embassy;
+      cd->add_item(QString(_("Establish Embassy")),
+                            func, qv1, qv2);
+    }
+    if (diplomat_can_do_action(punit, DIPLOMAT_INVESTIGATE, dest_tile)) {
+      func = diplomat_investigate;
+      cd->add_item(QString(_("Investigate City")), func, qv1, qv2);
+    }
+    if (!unit_has_type_flag(punit, UTYF_SPY)) {
+      if (diplomat_can_do_action(punit, DIPLOMAT_SABOTAGE, dest_tile)) {
+        func = diplomat_sabotage;
+        cd->add_item(QString(_("Sabotage City")), func, qv1, qv2);
+      }
+      if (diplomat_can_do_action(punit, DIPLOMAT_STEAL, dest_tile)) {
+        func = diplomat_steal;
+        cd->add_item(QString(_("Steal Technology")),
+                              func, qv1, qv2);
+      }
+      if (diplomat_can_do_action(punit, DIPLOMAT_INCITE, dest_tile)) {
+        func = diplomat_incite;
+        cd->add_item(QString(_("Incite a Revolt")), func, qv1, qv2);
+      }
+      if (unit_can_move_to_tile(punit, dest_tile, FALSE)) {
+        func = diplomat_keep_moving;
+        cd->add_item(QString(_("Keep moving")), func, qv1, qv2);
+      }
+    } else  {
+      if (diplomat_can_do_action(punit, SPY_POISON, dest_tile)) {
+        func = spy_poison;
+        cd->add_item(QString(_("Poison City")), func, qv1, qv2);
+      }
+      if (diplomat_can_do_action(punit, DIPLOMAT_SABOTAGE, dest_tile)) {
+        func = spy_request_sabotage_list;
+        cd->add_item(QString(_("Industrial Sabotage")),
+                              func, qv1, qv2);
+      }
+      if (diplomat_can_do_action(punit, DIPLOMAT_STEAL, dest_tile)) {
+        func = spy_steal;
+        cd->add_item(QString(_("Steal Technology")),
+                              func, qv1, qv2);
+      }
+      if (diplomat_can_do_action(punit, DIPLOMAT_INCITE, dest_tile)) {
+        func = diplomat_incite;
+        cd->add_item(QString(_("Incite a Revolt")), func, qv1, qv2);
+      }
+      if (unit_can_move_to_tile(punit, dest_tile, FALSE)) {
+        func = diplomat_keep_moving;
+        cd->add_item(QString(_("Keep moving")), func, qv1, qv2);
+      }
+    }
+    cd->set_layout();
+    cd->show_me();
   } else {
-    qv2 = ptunit->id;
-  }
+    if ((ptunit = unit_list_get(dest_tile->units, 0))) {
+      /* Spy/Diplomat acting against a unit */
 
-  if (diplomat_can_do_action(punit, DIPLOMAT_MOVE, dest_tile)) {
-    if (pcity) {
-      func = diplomat_keep_moving_city;
-      cd->add_item(QString(_("Keep moving")), func, qv1, qv2);
-    } else {
-      func = diplomat_keep_moving_unit;
-      cd->add_item(QString(_("Keep moving")), func, qv1, qv2);
+      diplomat_target_id = ptunit->id;
+      diplomat_id = punit->id;
+      gui()->set_current_unit(diplomat_id, diplomat_target_id);
+      astr_set(&text,
+               /* TRANS: %s is a unit name, e.g., Diplomat, Spy */
+               _("Your %s is waiting for your command."),
+               unit_name_translation(punit));
+      choice_dialog *cd = new choice_dialog(_("Subvert Enemy Unit"),
+                                                     astr_str(&text),
+                                                     gui()->game_tab_widget);
+      qv2 = ptunit->id;
+      qv1 = punit->id;
+      if (diplomat_can_do_action(punit, DIPLOMAT_BRIBE, dest_tile)) {
+        func = diplomat_bribe;
+        cd->add_item(QString(_("Bribe Enemy Unit")), func, qv1, qv2);
+      }
+      if (diplomat_can_do_action(punit, SPY_SABOTAGE_UNIT, dest_tile)) {
+        func = spy_sabotage_unit;
+        cd->add_item(QString(_("Sabotage Enemy Unit")),
+                              func, qv1, qv2);
+      }
+      func = keep_moving;
+      cd->add_item(QString(_("Do nothing")), func, qv1, qv2);
+      cd->set_layout();
+      cd->show_me();
     }
   }
-
-  func = keep_moving;
-  cd->add_item(QString(_("Do nothing")), func, qv1, qv2);
-
-  cd->set_layout();
-  cd->show_me();
-
   astr_free(&title);
   astr_free(&text);
-}
-
-/**********************************************************************
-  Show the user the action if it is enabled.
-**********************************************************************/
-static void action_entry(choice_dialog *cd,
-                         gen_action act,
-                         const action_probability *action_probabilities,
-                         pfcn_void func, QVariant data1,
-                         QVariant data2)
-{
-  QString title;
-  QString tool_tip;
-
-  /* Don't show disabled actions. */
-  if (action_probabilities[act] == ACTPROB_IMPOSSIBLE) {
-    return;
-  }
-
-  title = QString(action_prepare_ui_name(act, "&",
-                                         action_probabilities[act]));
-
-  switch (action_probabilities[act]) {
-  case ACTPROB_NOT_KNOWN:
-    /* Missing in game knowledge. An in game action can change this. */
-    tool_tip =
-        QString(_("Starting to do this may currently be impossible."));
-    break;
-  case ACTPROB_NOT_IMPLEMENTED:
-    /* Missing server support. No in game action will change this. */
-    tool_tip = "";
-    break;
-  default:
-    {
-      /* The unit is 0.5% chance of success. */
-      double converted = (double)action_probabilities[act] / 2;
-
-      tool_tip = QString(_("The probability of success is %1%."))
-                   .arg(converted);
-    }
-    break;
-  }
-
-  cd->add_item(title, func, data1, data2, tool_tip);
 }
 
 /***************************************************************************
@@ -1094,9 +1346,6 @@ static void diplomat_bribe(QVariant data1, QVariant data2)
 
   if (NULL != game_unit_by_number(diplomat_id)
       && NULL != game_unit_by_number(diplomat_target_id)) {
-    /* Wait for the server's reply before moving on to the next queued diplomat. */
-    is_more_user_input_needed = TRUE;
-
     request_diplomat_answer(DIPLOMAT_BRIBE, diplomat_id,
                             diplomat_target_id, 0);
   }
@@ -1129,9 +1378,6 @@ static void spy_steal(QVariant data1, QVariant data2)
   choice_dialog *cd;
   int nr = 0;
 
-  /* Wait for the player's reply before moving on to the next queued diplomat. */
-  is_more_user_input_needed = TRUE;
-
   if (pvcity) {
     pvictim = city_owner(pvcity);
   }
@@ -1140,22 +1386,17 @@ static void spy_steal(QVariant data1, QVariant data2)
     cd->close();
   }
   struct astring stra = ASTRING_INIT;
-  cd = new choice_dialog(_("_Steal"), _("Steal Technology"),
-                         gui()->game_tab_widget,
-                         diplomat_queue_handle_secondary);
+  cd = new choice_dialog(_("Steal"), _("Steal Technology"),
+                         gui()->game_tab_widget);
   qv1 = data1;
   struct player *pplayer = client.conn.playing;
   if (pvictim) {
-    const struct research *presearch = research_get(pplayer);
-    const struct research *vresearch = research_get(pvictim);
-
     advance_index_iterate(A_FIRST, i) {
-      if (research_invention_state(vresearch, i) == TECH_KNOWN
-          && (research_invention_state(presearch, i) == TECH_UNKNOWN
-              || research_invention_state(presearch, i)
-                 == TECH_PREREQS_KNOWN)) {
+      if (player_invention_state(pvictim, i) == TECH_KNOWN &&
+          (player_invention_state(pplayer, i) == TECH_UNKNOWN ||
+           player_invention_state(pplayer, i) == TECH_PREREQS_KNOWN)) {
         func = spy_steal_something;
-        str = research_advance_name_translation(presearch, i);
+        str = advance_name_for_player(client.conn.playing, i);
         cd->add_item(str, func, qv1, i);
         nr++;
       }
@@ -1179,10 +1420,10 @@ static void spy_steal_something(QVariant data1, QVariant data2)
   int diplomat_id;
   int diplomat_target_id;
 
-  gui()->get_current_unit(&diplomat_id, &diplomat_target_id, ATK_CITY);
+  gui()->get_current_unit(&diplomat_id, &diplomat_target_id);
   if (NULL != game_unit_by_number(diplomat_id)
       && NULL != game_city_by_number(diplomat_target_id)) {
-    request_diplomat_action(DIPLOMAT_STEAL_TARGET, diplomat_id,
+    request_diplomat_action(DIPLOMAT_STEAL, diplomat_id,
                             diplomat_target_id, data2.toInt());
   }
 }
@@ -1197,10 +1438,7 @@ static void spy_request_sabotage_list(QVariant data1, QVariant data2)
 
   if (NULL != game_unit_by_number(diplomat_id)
       && NULL != game_city_by_number(diplomat_target_id)) {
-    /* Wait for the server's reply before moving on to the next queued diplomat. */
-    is_more_user_input_needed = TRUE;
-
-    request_diplomat_answer(DIPLOMAT_SABOTAGE_TARGET, diplomat_id,
+    request_diplomat_answer(DIPLOMAT_SABOTAGE, diplomat_id,
                             diplomat_target_id, 0);
   }
 }
@@ -1289,9 +1527,6 @@ static void diplomat_incite(QVariant data1, QVariant data2)
 
   if (NULL != game_unit_by_number(diplomat_id)
       && NULL != game_city_by_number(diplomat_target_id)) {
-    /* Wait for the server's reply before moving on to the next queued diplomat. */
-    is_more_user_input_needed = TRUE;
-
     request_diplomat_answer(DIPLOMAT_INCITE, diplomat_id,
                             diplomat_target_id, 0);
   }
@@ -1300,7 +1535,7 @@ static void diplomat_incite(QVariant data1, QVariant data2)
 /***************************************************************************
   Action keep moving with diplomat for choice dialog
 ***************************************************************************/
-static void diplomat_keep_moving_city(QVariant data1, QVariant data2)
+static void diplomat_keep_moving(QVariant data1, QVariant data2)
 {
   struct unit *punit;
   struct city *pcity;
@@ -1311,25 +1546,7 @@ static void diplomat_keep_moving_city(QVariant data1, QVariant data2)
       && (pcity = game_city_by_number(diplomat_target_id))
       && !same_pos(unit_tile(punit), city_tile(pcity))) {
     request_diplomat_action(DIPLOMAT_MOVE, diplomat_id,
-                            diplomat_target_id, ATK_CITY);
-  }
-}
-
-/***************************************************************************
-  Action keep moving with diplomat for choice dialog
-***************************************************************************/
-static void diplomat_keep_moving_unit(QVariant data1, QVariant data2)
-{
-  struct unit *punit;
-  struct unit *tunit;
-  int diplomat_id = data1.toInt();
-  int diplomat_target_id = data2.toInt();
-
-  if ((punit = game_unit_by_number(diplomat_id))
-      && (tunit = game_unit_by_number(diplomat_target_id))
-      && !same_pos(unit_tile(punit), unit_tile(tunit))) {
-    request_diplomat_action(DIPLOMAT_MOVE, diplomat_id,
-                            diplomat_target_id, ATK_UNIT);
+                            diplomat_target_id, 0);
   }
 }
 
@@ -1345,9 +1562,6 @@ void popup_incite_dialog(struct unit *actor, struct city *pcity, int cost)
   int diplomat_id;
   int diplomat_target_id;
 
-  /* Should be set before sending request to the server. */
-  fc_assert(is_more_user_input_needed);
-
   fc_snprintf(buf, ARRAY_SIZE(buf), PL_("Treasury contains %d gold.",
                                         "Treasury contains %d gold.",
                                         client_player()->economic.gold),
@@ -1361,7 +1575,7 @@ void popup_incite_dialog(struct unit *actor, struct city *pcity, int cost)
     incite_impossible.setText(QString(buf2));
     incite_impossible.exec();
   } else if (cost <= client_player()->economic.gold) {
-    QMessageBox ask;
+    QMessageBox ask(gui()->central_wdg);
 
     fc_snprintf(buf2, ARRAY_SIZE(buf2),
                 PL_("Incite a revolt for %d gold?\n%s",
@@ -1377,7 +1591,7 @@ void popup_incite_dialog(struct unit *actor, struct city *pcity, int cost)
       return;
       break;
     case QMessageBox::Ok:
-      gui()->get_current_unit(&diplomat_id, &diplomat_target_id, ATK_CITY);
+      gui()->get_current_unit(&diplomat_id, &diplomat_target_id);
       request_diplomat_action(DIPLOMAT_INCITE, diplomat_id,
                               diplomat_target_id, 0);
       break;
@@ -1392,8 +1606,6 @@ void popup_incite_dialog(struct unit *actor, struct city *pcity, int cost)
     too_much.setText(QString(buf2));
     too_much.exec();
   }
-
-  diplomat_queue_handle_secondary();
 }
 
 /**************************************************************************
@@ -1402,7 +1614,7 @@ void popup_incite_dialog(struct unit *actor, struct city *pcity, int cost)
 **************************************************************************/
 void popup_bribe_dialog(struct unit *actor, struct unit *punit, int cost)
 {
-  QMessageBox ask;
+  QMessageBox ask(gui()->central_wdg);
   int ret;
   QString str;
   char buf[1024];
@@ -1410,14 +1622,17 @@ void popup_bribe_dialog(struct unit *actor, struct unit *punit, int cost)
   int diplomat_id;
   int diplomat_target_id;
 
-  /* Should be set before sending request to the server. */
-  fc_assert(is_more_user_input_needed);
-
-  gui()->get_current_unit(&diplomat_id, &diplomat_target_id, ATK_UNIT);
+  gui()->get_current_unit(&diplomat_id, &diplomat_target_id);
   fc_snprintf(buf, ARRAY_SIZE(buf), PL_("Treasury contains %d gold.",
                                         "Treasury contains %d gold.",
                                         client_player()->economic.gold),
               client_player()->economic.gold);
+  if (unit_has_type_flag(punit, UTYF_UNBRIBABLE)) {
+    ask.setWindowTitle(_("Ooops..."));
+    ask.setText(_("This unit cannot be bribed!"));
+    ask.exec();
+    return;
+  }
 
   ask.setWindowTitle(QString(_("Bribe Enemy Unit")));
   if (cost <= client_player()->economic.gold) {
@@ -1446,8 +1661,6 @@ void popup_bribe_dialog(struct unit *actor, struct unit *punit, int cost)
     ask.setWindowTitle(_("Traitors Demand Too Much!"));
     ask.exec();
   }
-
-  diplomat_queue_handle_secondary();
 }
 
 /***************************************************************************
@@ -1458,15 +1671,25 @@ static void pillage_something(QVariant data1, QVariant data2)
   int punit_id;
   int what;
   struct unit *punit;
-  struct extra_type *target;
 
   what = data1.toInt();
   punit_id = data2.toInt();
   punit = game_unit_by_number(punit_id);
-  if (punit) {
-    target = extra_by_number(what);
-    request_new_unit_activity_targeted(punit, ACTIVITY_PILLAGE, target);
-  }
+  struct act_tgt target;
+
+    if (what >= S_LAST + game.control.num_base_types) {
+      target.type = ATT_ROAD;
+      target.obj.road = what - S_LAST - game.control.num_base_types;
+    } else if (what >= S_LAST) {
+      target.type = ATT_BASE;
+      target.obj.base = what - S_LAST;
+    } else {
+      target.type = ATT_SPECIAL;
+      target.obj.spe = static_cast<tile_special_type>(what);
+    }
+
+    request_new_unit_activity_targeted(punit, ACTIVITY_PILLAGE,
+                                       &target);
   ::is_showing_pillage_dialog = false;
 }
 
@@ -1478,10 +1701,10 @@ static void spy_sabotage(QVariant data1, QVariant data2)
   int diplomat_id;
   int diplomat_target_id;
 
-  gui()->get_current_unit(&diplomat_id, &diplomat_target_id, ATK_CITY);
+  gui()->get_current_unit(&diplomat_id, &diplomat_target_id);
   if (NULL != game_unit_by_number(diplomat_id)
         && NULL != game_city_by_number(diplomat_target_id)) {
-      request_diplomat_action(DIPLOMAT_SABOTAGE_TARGET, diplomat_id,
+      request_diplomat_action(DIPLOMAT_SABOTAGE, diplomat_id,
                               diplomat_target_id,  data2.toInt()+1);
     }
 }
@@ -1498,17 +1721,13 @@ void popup_sabotage_dialog(struct unit *actor, struct city *pcity)
   int diplomat_id;
   int diplomat_target_id;
   pfcn_void func;
-  choice_dialog *cd = new choice_dialog(_("_Sabotage"),
+  choice_dialog *cd = new choice_dialog(_("Sabotage"),
                                         _("Select Improvement to Sabotage"),
-                                        gui()->game_tab_widget,
-                                        diplomat_queue_handle_secondary);
+                                        gui()->game_tab_widget);
   int nr = 0;
   struct astring stra = ASTRING_INIT;
 
-  /* Should be set before sending request to the server. */
-  fc_assert(is_more_user_input_needed);
-
-  gui()->get_current_unit(&diplomat_id, &diplomat_target_id, ATK_CITY);
+  gui()->get_current_unit(&diplomat_id, &diplomat_target_id);
   qv1 = diplomat_id;
   func = spy_sabotage;
   cd->add_item(QString(_("City Production")), func, qv1, -1);
@@ -1535,13 +1754,14 @@ void popup_sabotage_dialog(struct unit *actor, struct city *pcity)
   Popup a dialog asking the unit which improvement they would like to
   pillage.
 **************************************************************************/
-void popup_pillage_dialog(struct unit *punit, bv_extras extras)
+void popup_pillage_dialog(struct unit *punit, bv_special spe,
+                          bv_bases bases, bv_roads roads)
 {
   QString str;
   QVariant qv1, qv2;
   pfcn_void func;
+  struct act_tgt tgt;
   choice_dialog *cd;
-  struct extra_type *tgt;
 
   if (is_showing_pillage_dialog){
     return;
@@ -1549,21 +1769,38 @@ void popup_pillage_dialog(struct unit *punit, bv_extras extras)
   cd = new choice_dialog(_("What To Pillage"), _("Select what to pillage:"),
                          gui()->game_tab_widget);
   qv2 = punit->id;
-  while ((tgt = get_preferred_pillage(extras))) {
-    int what;
-    bv_extras what_extras;
+    while (get_preferred_pillage(&tgt, spe, bases, roads)) {
+      int what = S_LAST;
+      bv_special what_spe;
+      bv_bases what_base;
+      bv_roads what_road;
 
-    BV_CLR_ALL(what_extras);
+      BV_CLR_ALL(what_spe);
+      BV_CLR_ALL(what_base);
+      BV_CLR_ALL(what_road);
 
-    what = extra_index(tgt);
-    BV_CLR(extras, what);
-    BV_SET(what_extras, what);
-
-    func = pillage_something;
-    str = get_infrastructure_text(what_extras);
-    qv1 = what;
-    cd->add_item(str, func, qv1, qv2);
-  }
+      switch (tgt.type) {
+        case ATT_SPECIAL:
+          BV_SET(what_spe, tgt.obj.spe);
+          what = tgt.obj.spe;
+          clear_special(&spe, tgt.obj.spe);
+          break;
+        case ATT_BASE:
+          BV_SET(what_base, tgt.obj.base);
+          what = tgt.obj.base + S_LAST;
+          BV_CLR(bases, tgt.obj.base);
+          break;
+        case ATT_ROAD:
+          BV_SET(what_road, tgt.obj.road);
+          what = tgt.obj.road + S_LAST + game.control.num_base_types;
+          BV_CLR(roads, tgt.obj.road);
+          break;
+      }
+      func = pillage_something;
+      str = get_infrastructure_text(what_spe, what_base, what_road);
+      qv1 = what;
+      cd->add_item(str, func, qv1,qv2);
+    }
   cd->set_layout();
   cd->show_me();
 }
@@ -1573,26 +1810,21 @@ void popup_pillage_dialog(struct unit *punit, bv_extras extras)
 ****************************************************************************/
 void popup_disband_dialog(struct unit_list *punits)
 {
-  QMessageBox ask;
+  QMessageBox ask(gui()->central_wdg);
   int ret;
   QString str;
 
   if (!punits || unit_list_size(punits) == 0) {
     return;
   }
-  if (unit_list_size(punits) == 1) {
-    ask.setText(_("Are you sure you want to disband that unit?"));
-  } else {
-    str =
-        QString(_("Are you sure you want to disband those %1 units?")).arg
-        (unit_list_size(punits));
-    ask.setText(str);
-  }
-  ask.setWindowTitle(_("Disband"));
+  str = QString(PL_("Are you sure you want to disband that %1 unit?",
+                  "Are you sure you want to disband those %1 units?",
+                  unit_list_size(punits))).arg(unit_list_size(punits));
+  ask.setText(str);
   ask.setStandardButtons(QMessageBox::Cancel | QMessageBox::Ok);
   ask.setDefaultButton(QMessageBox::Cancel);
   ask.setIcon(QMessageBox::Question);
-  ask.setWindowTitle(_("Disband unit(s)"));
+  ask.setWindowTitle(_("Disband units"));
   ret = ask.exec();
 
   switch (ret) {
@@ -1623,15 +1855,6 @@ void popup_tileset_suggestion_dialog(void)
   user and load.
 *****************************************************************/
 void popup_soundset_suggestion_dialog(void)
-{
-  qDebug() << Q_FUNC_INFO << "PORTME";
-}
-
-/****************************************************************
-  Ruleset (modpack) has suggested loading certain musicset. Confirm from
-  user and load.
-*****************************************************************/
-void popup_musicset_suggestion_dialog(void)
 {
   qDebug() << Q_FUNC_INFO << "PORTME";
 }
@@ -1686,8 +1909,7 @@ void close_diplomat_dialog(void)
   if (cd != NULL){
     cd->close();
   }
-  gui()->set_current_unit(-1, -1, ATK_UNIT);
-  gui()->set_current_unit(-1, -1, ATK_CITY);
+  gui()->set_current_unit(-1, -1);
 }
 
 /****************************************************************
@@ -1702,33 +1924,69 @@ void caravan_dialog_update(void)
   QString str;
   QVariant qv1, qv2;
   pfcn_void func;
+  bool can_wonder;
+  bool wonder_button_not_found;
   int i;
+  int kmbn;
   QVBoxLayout *layout;
   QPushButton *qpb;
 
   if (caravan_dialog == NULL) {
     return;
   }
+
   destcity = game_city_by_number(caravan_city_id);
   caravan = game_unit_by_number(caravan_unit_id);
+  can_wonder = destcity && caravan
+               && unit_can_help_build_wonder(caravan, destcity);
+
+  wonder_button_not_found = TRUE;
   i = 0;
+  kmbn = -1;
   layout = caravan_dialog->get_layout();
   foreach (func, caravan_dialog->func_list) {
     if (func == caravan_help_build) {
-      if (destcity && caravan
-          && unit_can_help_build_wonder(caravan, destcity)) {
+      wonder_button_not_found = FALSE;
+      if (can_wonder) {
         fc_snprintf(buf2, sizeof(buf2),
-                  _("Help build _Wonder (%d remaining)"),
+                  _("Help build Wonder (%d remaining)"),
                   impr_build_shield_cost(destcity->production.value.building)
                   - destcity->shield_stock);
         wonder = QString(buf2);
       } else {
-        wonder = QString(_("Help build _Wonder"));
+        wonder = QString(_("Help build Wonder"));
       }
+
       qpb = qobject_cast<QPushButton *>(layout->itemAt(i + 1)->widget());
       qpb->setText(wonder);
+      qpb->setEnabled(can_wonder);
+    } else if (func == caravan_keep_moving) {
+      /* Store the number of the Keep moving button for later insert. */
+      kmbn = i;
     }
     i++;
+  }
+
+  if (can_wonder && wonder_button_not_found) {
+    QString title;
+
+    if (0 <= kmbn) {
+      /* Temporary remove the Keep moving button so it won't end up above
+       * the Help build Wonder button. */
+      caravan_dialog->stack_button(kmbn);
+    }
+
+    title = QString(_("Help build Wonder (%1 remaining)")).arg(
+          impr_build_shield_cost(destcity->production.value.building)
+          - destcity->shield_stock);
+    caravan_dialog->add_item(title, caravan_help_build,
+                             destcity->id, caravan->id);
+
+    if (0 <= kmbn) {
+      /* Reinsert the "Keep moving" button below the
+       * Help build Wonder button. */
+      caravan_dialog->unstack_all_buttons();
+    }
   }
 }
 
@@ -1753,32 +2011,35 @@ void show_tileset_error(const char *msg)
 void popup_upgrade_dialog(struct unit_list *punits)
 {
   char buf[512];
-  QMessageBox ask;
+  QMessageBox ask(gui()->central_wdg);
   int ret;
 
   if (!punits || unit_list_size(punits) == 0) {
     return;
   }
   if (!get_units_upgrade_info(buf, sizeof(buf), punits)) {
-    ask.setText(QString(buf));
     ask.setWindowTitle(_("Upgrade Unit!"));
+    ask.setStandardButtons(QMessageBox::Ok);
+    ask.setIcon(QMessageBox::Information);
   } else {
     ask.setWindowTitle(_("Upgrade Obsolete Units"));
     ask.setStandardButtons(QMessageBox::Cancel | QMessageBox::Ok);
-    ask.setDefaultButton(QMessageBox::Cancel);
     ask.setIcon(QMessageBox::Question);
-    ret = ask.exec();
+    ask.setDefaultButton(QMessageBox::Cancel);
+  }
+  ask.setText(QString(buf));
+  ret = ask.exec();
 
-    switch (ret) {
-    case QMessageBox::Cancel:
-      return;
-      break;
-    case QMessageBox::Ok:
-      unit_list_iterate(punits, punit) {
-        request_unit_upgrade(punit);
-      } unit_list_iterate_end;
-      break;
+  switch (ret) {
+  case QMessageBox::Cancel:
+    return;
+    break;
+  case QMessageBox::Ok:
+    unit_list_iterate(punits, punit) {
+      request_unit_upgrade(punit);
     }
+    unit_list_iterate_end;
+    break;
   }
 }
 
@@ -1844,6 +2105,7 @@ void unit_select::create_pixmap()
     pix = NULL;
   };
 
+  update_units();
   if (unit_list.count() > 0) {
   punit = unit_list.at(0);
   item_size.setWidth(tileset_full_tile_width(tileset));
@@ -1872,7 +2134,7 @@ void unit_select::create_pixmap()
     unit_pixmap = qtg_canvas_create(tileset_full_tile_width(tileset),
                                     tileset_tile_height(tileset) * 3 / 2);
     unit_pixmap->map_pixmap.fill(Qt::transparent);
-    put_unit(punit, unit_pixmap, 1.0, 0, 0);
+    put_unit(punit, unit_pixmap, 0, 0);
     pix_list.push_back(&unit_pixmap->map_pixmap);
   }
   a = qMin(item_size.width() / 4, 12);
@@ -1959,8 +2221,11 @@ void unit_select::mousePressEvent(QMouseEvent *event)
     close();
     destroy();
   }
-  if (event->button() == Qt::LeftButton && highligh_num != -1
-      && highligh_num < unit_list.count()) {
+  if (event->button() == Qt::LeftButton && highligh_num != -1) {
+    update_units();
+    if (highligh_num >= unit_list.count()) {
+      return;
+    }
     punit = unit_list.at(highligh_num);
     unit_focus_set(punit);
     was_destroyed = true;
@@ -1990,13 +2255,14 @@ void unit_select::paint(QPainter *painter, QPaintEvent *event)
   }
   if (highligh_num != -1 && highligh_num < unit_list.count()) {
     punit = unit_list.at(highligh_num);
-    str2 = QString(unit_activity_text(punit))
-          + QString(" ") + QString(_("HP")) + QString(": ")
-          + QString::number(punit->hp) + QString("/")
-          + QString::number(unit_type(punit)->hp);
+    /* TRANS: HP - hit points */
+    str2 = QString(_("%1 HP:%2/%3")).arg(QString(unit_activity_text(punit)),
+                                      QString::number(punit->hp),
+                                      QString::number(unit_type(punit)->hp));
   }
-  str = QString::number(unit_list_size(utile->units)) + " "
-        + QString(_("units"));
+  str = QString(PL_("%1 unit", "%1 units",
+                    unit_list_size(utile->units)))
+                .arg(unit_list_size(utile->units));
   for (i = *f_size; i > 4; i--) {
     if (point_size < 0) {
       info_font->setPixelSize(i);
@@ -2066,6 +2332,9 @@ void unit_select::update_units()
       unit_list.push_back(punit);
     i++;
   } unit_list_iterate_end;
+  if (unit_list.count() == 0) {
+    close();
+  }
 }
 
 /****************************************************************
@@ -2095,21 +2364,19 @@ void unit_select::wheelEvent(QWheelEvent *event)
 /***************************************************************************
  Set current unit handled in diplo dialog
 ***************************************************************************/
-void fc_client::set_current_unit(int curr, int target,
-                                 action_target_kind tgt)
+void fc_client::set_current_unit(int curr, int target)
 {
   current_unit_id = curr;
-  current_unit_target_id[tgt] = target;
+  current_unit_target_id  = target;
 }
 
 /***************************************************************************
  Get current unit handled in diplo dialog
 ***************************************************************************/
-void fc_client::get_current_unit(int *curr, int *target,
-                                 action_target_kind tgt)
+void fc_client::get_current_unit(int *curr, int *target)
 {
   *curr = current_unit_id;
-  *target = current_unit_target_id[tgt];
+  *target = current_unit_target_id;
 }
 
 /***************************************************************************

@@ -40,7 +40,6 @@
 #include "movement.h"
 #include "packets.h"
 #include "player.h"
-#include "research.h"
 #include "terrain.h"
 #include "unit.h"
 #include "unitlist.h"
@@ -78,9 +77,6 @@
 #include "autoexplorer.h"
 #include "autosettlers.h"
 
-/* ai */
-#include "handicaps.h"
-
 #include "unittools.h"
 
 /* We need this global variable for our sort algorithm */
@@ -97,18 +93,15 @@ static void do_upgrade_effects(struct player *pplayer);
 static bool maybe_cancel_patrol_due_to_enemy(struct unit *punit);
 static int hp_gain_coord(struct unit *punit);
 
-static void unit_move_transported(struct unit_list *units,
-                                  struct tile *psrc, struct tile *pdest);
-static void remove_transported_gone_out_of_sight(struct unit_list *units,
-                                                 struct tile *psrc);
-
 static bool maybe_become_veteran_real(struct unit *punit, bool settler);
 
-static void send_unit_info_to_onlookers_transport(struct connection *pconn,
-                                                  struct unit *punit);
 static void unit_transport_load_tp_status(struct unit *punit,
                                                struct unit *ptrans,
                                                bool force);
+
+static void wipe_unit_full(struct unit *punit, bool transported,
+                           enum unit_loss_reason reason,
+                           struct player *killer);
 
 /**************************************************************************
   Returns a unit type that matches the role_tech or role roles.
@@ -236,11 +229,10 @@ static bool maybe_become_veteran_real(struct unit *punit, bool settler)
 void unit_versus_unit(struct unit *attacker, struct unit *defender,
 		      bool bombard, int *att_hp, int *def_hp)
 {
-  int attackpower = get_total_attack_power(attacker, defender);
-  int defensepower = get_total_defense_power(attacker, defender);
+  int attackpower = get_total_attack_power(attacker,defender);
+  int defensepower = get_total_defense_power(attacker,defender);
+
   int attack_firepower, defense_firepower;
-  struct player *plr1 = unit_owner(attacker);
-  struct player *plr2 = unit_owner(defender);
 
   *att_hp = attacker->hp;
   *def_hp = defender->hp;
@@ -250,9 +242,6 @@ void unit_versus_unit(struct unit *attacker, struct unit *defender,
   log_verbose("attack:%d, defense:%d, attack firepower:%d, "
               "defense firepower:%d", attackpower, defensepower,
               attack_firepower, defense_firepower);
-
-  plr1->last_war_action = game.info.turn;
-  plr2->last_war_action = game.info.turn;
 
   if (bombard) {
     int i;
@@ -277,7 +266,7 @@ void unit_versus_unit(struct unit *attacker, struct unit *defender,
     *def_hp = 0;
   }
   while (*att_hp > 0 && *def_hp > 0) {
-    if (fc_rand(attackpower + defensepower) >= defensepower) {
+    if (fc_rand(attackpower+defensepower) >= defensepower) {
       *def_hp -= attack_firepower;
     } else {
       *att_hp -= defense_firepower;
@@ -402,7 +391,7 @@ void player_restore_units(struct player *pplayer)
           && !is_unit_being_refueled(punit)) {
         struct unit *carrier;
 
-        carrier = transport_from_tile(punit, unit_tile(punit));
+        carrier = transporter_for_unit(punit);
         if (carrier) {
           unit_transport_load_tp_status(punit, carrier, FALSE);
         } else {
@@ -412,7 +401,6 @@ void player_restore_units(struct player *pplayer)
           struct pf_parameter parameter;
 
           pft_fill_unit_parameter(&parameter, punit);
-          parameter.omniscience = !has_handicap(pplayer, H_MAP);
           pfm = pf_map_new(&parameter);
 
           pf_map_move_costs_iterate(pfm, ptile, move_cost, TRUE) {
@@ -450,7 +438,7 @@ void player_restore_units(struct player *pplayer)
                 punit->goto_tile = NULL;
 
                 if (!is_unit_being_refueled(punit)) {
-                  carrier = transport_from_tile(punit, unit_tile(punit));
+                  carrier = transporter_for_unit(punit);
                   if (carrier) {
                     unit_transport_load_tp_status(punit, carrier, FALSE);
                   }
@@ -638,21 +626,68 @@ static int hp_gain_coord(struct unit *punit)
 
 /**************************************************************************
   Calculate the total amount of activity performed by all units on a tile
-  for a given task and target.
+  for a given task.
 **************************************************************************/
-static int total_activity(struct tile *ptile, enum unit_activity act,
-                          struct extra_type *tgt)
+static int total_activity(struct tile *ptile, enum unit_activity act)
 {
   int total = 0;
-  bool tgt_matters = activity_requires_target(act);
+
+  unit_list_iterate (ptile->units, punit)
+    if (punit->activity == act) {
+      total += punit->activity_count;
+    }
+  unit_list_iterate_end;
+  return total;
+}
+
+/**************************************************************************
+  Calculate the total amount of activity performed by all units on a tile
+  for a given task and target.
+**************************************************************************/
+static int total_activity_targeted(struct tile *ptile, enum unit_activity act,
+                                   struct act_tgt *tgt)
+{
+  int total = 0;
+
+  unit_list_iterate (ptile->units, punit)
+    if (punit->activity == act && cmp_act_tgt(&punit->activity_target, tgt)) {
+      total += punit->activity_count;
+    }
+  unit_list_iterate_end;
+  return total;
+}
+
+/**************************************************************************
+  Calculate the total amount of base building activity performed by all
+  units on a tile for a given base.
+**************************************************************************/
+static int total_activity_base(struct tile *ptile, Base_type_id base)
+{
+  int total = 0;
+
+  unit_list_iterate (ptile->units, punit)
+    if (punit->activity == ACTIVITY_BASE
+        && punit->activity_target.obj.base == base) {
+      total += punit->activity_count;
+    }
+  unit_list_iterate_end;
+  return total;
+}
+
+/**************************************************************************
+  Calculate the total amount of road building activity performed by all
+  units on a tile for a given road.
+**************************************************************************/
+static int total_activity_road(struct tile *ptile, Road_type_id road)
+{
+  int total = 0;
 
   unit_list_iterate (ptile->units, punit) {
-    if (punit->activity == act
-        && (!tgt_matters || punit->activity_target == tgt)) {
+    if (punit->activity == ACTIVITY_GEN_ROAD
+        && punit->activity_target.obj.road == road) {
       total += punit->activity_count;
     }
   } unit_list_iterate_end;
-
   return total;
 }
 
@@ -660,10 +695,9 @@ static int total_activity(struct tile *ptile, enum unit_activity act,
   Check the total amount of activity performed by all units on a tile
   for a given task.
 **************************************************************************/
-static bool total_activity_done(struct tile *ptile, enum unit_activity act,
-                                struct extra_type *tgt)
+static bool total_activity_done(struct tile *ptile, enum unit_activity act)
 {
-  return total_activity(ptile, act, tgt) >= tile_activity_time(act, ptile, tgt);
+  return total_activity(ptile, act) >= tile_activity_time(act, ptile);
 }
 
 /**************************************************************************
@@ -726,16 +760,11 @@ static void unit_convert(struct unit *punit)
 **************************************************************************/
 static void update_unit_activity(struct unit *punit)
 {
-  const enum unit_activity tile_changing_actions[] =
-    { ACTIVITY_PILLAGE, ACTIVITY_GEN_ROAD, ACTIVITY_IRRIGATE, ACTIVITY_MINE,
-      ACTIVITY_BASE, ACTIVITY_TRANSFORM, ACTIVITY_POLLUTION,
-      ACTIVITY_FALLOUT, ACTIVITY_LAST };
-
   struct player *pplayer = unit_owner(punit);
   bool unit_activity_done = FALSE;
   enum unit_activity activity = punit->activity;
   struct tile *ptile = unit_tile(punit);
-  int i;
+  bool check_adjacent_units = FALSE;
   
   switch (activity) {
   case ACTIVITY_IDLE:
@@ -797,14 +826,28 @@ static void update_unit_activity(struct unit *punit)
     return;
 
   case ACTIVITY_PILLAGE:
-    if (total_activity(ptile, ACTIVITY_PILLAGE, 
-                       punit->activity_target) >= 1) {
-      destroy_extra(ptile, punit->activity_target);
-      unit_activity_done = TRUE;
+    if (total_activity_targeted(ptile, ACTIVITY_PILLAGE, 
+                                &punit->activity_target) >= 1) {
+      struct player *victim = tile_owner(ptile); /* Owner before fortress gets destroyed */
+
+      switch (punit->activity_target.type) {
+        case ATT_SPECIAL:
+          tile_clear_special(ptile, punit->activity_target.obj.spe);
+          break;
+        case ATT_BASE:
+          destroy_base(ptile, base_by_number(punit->activity_target.obj.base));
+          break;
+        case ATT_ROAD:
+          tile_remove_road(ptile, road_by_number(punit->activity_target.obj.road));
+          break;
+      }
 
       bounce_units_on_terrain_change(ptile);
 
-      call_incident(INCIDENT_PILLAGE, unit_owner(punit), tile_owner(ptile));
+      unit_activity_done = TRUE;
+      check_adjacent_units = TRUE;
+
+      call_incident(INCIDENT_PILLAGE, unit_owner(punit), victim);
 
       /* Change vision if effects have changed. */
       unit_list_refresh_vision(ptile->units);
@@ -812,66 +855,56 @@ static void update_unit_activity(struct unit *punit)
     break;
 
   case ACTIVITY_POLLUTION:
-    /* TODO: Remove this fallback target setting when target always correctly
-     *       set */
-    if (punit->activity_target == NULL) {
-      punit->activity_target = prev_extra_in_tile(ptile, ERM_CLEANPOLLUTION,
-                                                  NULL, punit);
-    }
-    if (total_activity_done(ptile, ACTIVITY_POLLUTION, punit->activity_target)) {
-      tile_remove_extra(ptile, punit->activity_target);
+    if (total_activity_done(ptile, ACTIVITY_POLLUTION)) {
+      tile_clear_special(ptile, S_POLLUTION);
       unit_activity_done = TRUE;
     }
     break;
 
   case ACTIVITY_FALLOUT:
-    /* TODO: Remove this fallback target setting when target always correctly
-     *       set */
-    if (punit->activity_target == NULL) {
-      punit->activity_target = prev_extra_in_tile(ptile, ERM_CLEANFALLOUT,
-                                                  NULL, punit);
-    }
-    if (total_activity_done(ptile, ACTIVITY_FALLOUT, punit->activity_target)) {
-      tile_remove_extra(ptile, punit->activity_target);
+    if (total_activity_done(ptile, ACTIVITY_FALLOUT)) {
+      tile_clear_special(ptile, S_FALLOUT);
       unit_activity_done = TRUE;
     }
     break;
 
   case ACTIVITY_BASE:
-    {
-      if (total_activity(ptile, ACTIVITY_BASE, punit->activity_target)
-          >= tile_activity_time(ACTIVITY_BASE, ptile, punit->activity_target)) {
-        struct base_type *new_base = extra_base_get(punit->activity_target);
+    if (total_activity_base(ptile, punit->activity_target.obj.base)
+        >= tile_activity_base_time(ptile, punit->activity_target.obj.base)) {
+      struct base_type *new_base = base_by_number(punit->activity_target.obj.base);
 
-        create_base(ptile, new_base, unit_owner(punit));
-        unit_activity_done = TRUE;
-      }
+      create_base(ptile, new_base, unit_owner(punit));
+      unit_activity_done = TRUE;
     }
     break;
 
   case ACTIVITY_GEN_ROAD:
-    {
-      if (total_activity(ptile, ACTIVITY_GEN_ROAD, punit->activity_target)
-          >= tile_activity_time(ACTIVITY_GEN_ROAD, ptile, punit->activity_target)) {
-        struct road_type *new_road = extra_road_get(punit->activity_target);
+    if (total_activity_road(ptile, punit->activity_target.obj.road)
+        >= tile_activity_road_time(ptile, punit->activity_target.obj.road)) {
+      struct road_type *new_road = road_by_number(punit->activity_target.obj.road);
 
-        create_road(ptile, new_road);
-        unit_activity_done = TRUE;
-      }
+      tile_add_road(ptile, new_road);
+      unit_activity_done = TRUE;
     }
     break;
 
   case ACTIVITY_IRRIGATE:
   case ACTIVITY_MINE:
   case ACTIVITY_TRANSFORM:
-    if (total_activity_done(ptile, activity, punit->activity_target)) {
+    if (total_activity_done(ptile, activity)) {
       struct terrain *old = tile_terrain(ptile);
 
       /* The function below could change the terrain. Therefore, we have to
        * check the terrain (which will also do a sanity check for the tile). */
-      tile_apply_activity(ptile, activity, punit->activity_target);
+      tile_apply_activity(ptile, activity);
       check_terrain_change(ptile, old);
+
       unit_activity_done = TRUE;
+      if (activity != ACTIVITY_IRRIGATE) {
+        /* May have destroyed irrigation that other activity was
+         * depending on. */
+        check_adjacent_units = TRUE;
+      }
     }
     break;
 
@@ -907,31 +940,26 @@ static void update_unit_activity(struct unit *punit)
         }
       } unit_list_iterate_end;
     }
+  }
 
-    for (i = 0; tile_changing_actions[i] != ACTIVITY_LAST; i++) {
-      if (tile_changing_actions[i] == activity) {
-        /* Some units nearby may not be able to continue their action,
-         * such as building irrigation if we removed the only source
-         * of water from them. */
-        adjc_iterate(ptile, ptile2) {
-          unit_list_iterate(ptile2->units, punit2) {
-            if (!can_unit_continue_current_activity(punit2)) {
-              if (unit_has_orders(punit2)) {
-                notify_player(unit_owner(punit2), unit_tile(punit2),
-                              E_UNIT_ORDERS, ftc_server,
-                              _("Orders for %s aborted because activity "
-                                "is no longer available."),
-                              unit_link(punit2));
-                free_unit_orders(punit2);
-              }
-              set_unit_activity(punit2, ACTIVITY_IDLE);
-              send_unit_info(NULL, punit2);
-            }
-          } unit_list_iterate_end;
-        } adjc_iterate_end;
-        break;
-      }
-    }
+  /* Some units nearby may not be able to continue irrigating */
+  if (check_adjacent_units) {
+    adjc_iterate(ptile, ptile2) {
+      unit_list_iterate(ptile2->units, punit2) {
+        if (!can_unit_continue_current_activity(punit2)) {
+          if (unit_has_orders(punit2)) {
+            notify_player(unit_owner(punit2), unit_tile(punit2),
+                          E_UNIT_ORDERS, ftc_server,
+                          _("Orders for %s aborted because activity "
+                            "is no longer available."),
+                          unit_link(punit2));
+            free_unit_orders(punit2);
+          }
+          set_unit_activity(punit2, ACTIVITY_IDLE);
+          send_unit_info(NULL, punit2);
+        }
+      } unit_list_iterate_end;
+    } adjc_iterate_end;
   }
 
   if (activity == ACTIVITY_FORTIFYING) {
@@ -965,20 +993,33 @@ void unit_forget_last_activity(struct unit *punit)
 **************************************************************************/
 void unit_assign_specific_activity_target(struct unit *punit,
                                           enum unit_activity *activity,
-                                          struct extra_type **target)
+                                          struct act_tgt *target)
 {
   if (*activity == ACTIVITY_PILLAGE
-      && *target == NULL) {
+      && target->type == ATT_SPECIAL && target->obj.spe == S_LAST) {
     struct tile *ptile = unit_tile(punit);
-    struct extra_type *tgt;
+    struct act_tgt tgt;
 
-    bv_extras extras = tile_extras(ptile);
+    bv_special specials = tile_specials(ptile);
+    bv_bases bases = tile_bases(ptile);
+    bv_roads roads = tile_roads(ptile);
 
-    while ((tgt = get_preferred_pillage(extras))) {
+    while (get_preferred_pillage(&tgt, specials, bases, roads)) {
 
-      BV_CLR(extras, extra_index(tgt));
+      switch (tgt.type) {
+      case ATT_SPECIAL:
+        clear_special(&specials, tgt.obj.spe);
+        break;
+      case ATT_BASE:
+        BV_CLR(bases, tgt.obj.base);
+        break;
+      case ATT_ROAD:
+        BV_CLR(roads, tgt.obj.road);
+        break;
+      }
 
-      if (can_unit_do_activity_targeted(punit, *activity, tgt)) {
+      if (can_unit_do_activity_targeted(punit, *activity,
+                                        &tgt)) {
         *target = tgt;
         return;
       }
@@ -1277,22 +1318,36 @@ void resolve_unit_stacks(struct player *pplayer, struct player *aplayer,
 }
 
 /****************************************************************************
+  Returns the list of the units owned by 'aplayer' seen by 'pplayer'. The
+  returned pointer is newly allocated and should be freed by the caller,
+  using unit_list_destroy().
+****************************************************************************/
+struct unit_list *get_seen_units(const struct player *pplayer,
+                                 const struct player *aplayer)
+{
+  struct unit_list *seen_units = unit_list_new();
+
+  unit_list_iterate(aplayer->units, punit) {
+    if (can_player_see_unit(pplayer, punit)) {
+      unit_list_append(seen_units, punit);
+    }
+  } unit_list_iterate_end;
+
+  return seen_units;
+}
+
+/****************************************************************************
   When two players cancel an alliance, a lot of units that were visible may
   no longer be visible (this includes units in transporters and cities).
   Call this function to inform the clients that these units are no longer
-  visible.  Note that this function should be called _after_
-  resolve_unit_stacks().
+  visible.
 ****************************************************************************/
-void remove_allied_visibility(struct player* pplayer, struct player* aplayer)
+void remove_allied_visibility(struct player *pplayer, struct player *aplayer,
+                              const struct unit_list *seen_units)
 {
-  unit_list_iterate(aplayer->units, punit) {
-    /* We don't know exactly which units have been hidden.  But only a unit
-     * whose tile is visible but who aren't visible themselves are
-     * candidates.  This solution just tells the client to drop all such
-     * units.  If any of these are unknown to the client the client will
-     * just ignore them. */
-    if (map_is_known_and_seen(unit_tile(punit), pplayer, V_MAIN) &&
-        !can_player_see_unit(pplayer, punit)) {
+  unit_list_iterate(seen_units, punit) {
+    /* We need to hide units previously seen by the client. */
+    if (!can_player_see_unit(pplayer, punit)) {
       unit_goes_out_of_sight(pplayer, punit);
     }
   } unit_list_iterate_end;
@@ -1307,6 +1362,20 @@ void remove_allied_visibility(struct player* pplayer, struct player* aplayer)
   } city_list_iterate_end;
 }
 
+/****************************************************************************
+  Refresh units visibility of 'aplayer' for 'pplayer' after alliance have
+  been contracted.
+****************************************************************************/
+void give_allied_visibility(struct player *pplayer,
+                            struct player *aplayer)
+{
+  unit_list_iterate(aplayer->units, punit) {
+    if (can_player_see_unit(pplayer, punit)) {
+      send_unit_info(pplayer->connections, punit);
+    }
+  } unit_list_iterate_end;
+}
+
 /**************************************************************************
  Is unit being refueled in its current position
 **************************************************************************/
@@ -1314,8 +1383,8 @@ bool is_unit_being_refueled(const struct unit *punit)
 {
   return (unit_transported(punit)           /* Carrier */
           || tile_city(unit_tile(punit))              /* City    */
-          || tile_has_refuel_extra(unit_tile(punit),
-                                   unit_type(punit))); /* Airbase */
+          || tile_has_native_base(unit_tile(punit),
+                                  unit_type(punit))); /* Airbase */
 }
 
 /**************************************************************************
@@ -1339,11 +1408,11 @@ bool is_airunit_refuel_point(const struct tile *ptile,
   if (NULL != pclass->cache.refuel_bases) {
     const struct player_tile *plrtile = map_get_player_tile(ptile, pplayer);
 
-    extra_type_list_iterate(pclass->cache.refuel_bases, pextra) {
-      if (BV_ISSET(plrtile->extras, extra_index(pextra))) {
+    base_type_list_iterate(pclass->cache.refuel_bases, pbase) {
+      if (BV_ISSET(plrtile->bases, base_index(pbase))) {
         return TRUE;
       }
-    } extra_type_list_iterate_end;
+    } base_type_list_iterate_end;
   }
 
   return (NULL != transport_from_tile(punit, ptile));
@@ -1377,18 +1446,14 @@ void transform_unit(struct unit *punit, struct unit_type *to_unit,
 
   /* New type may not have the same veteran system, and we may want to
    * knock some levels off. */
-  if (utype_has_flag(to_unit, UTYF_NO_VETERAN)) {
-    punit->veteran = 0;
+  punit->veteran = MIN(punit->veteran,
+                       utype_veteran_system(to_unit)->levels - 1);
+  if (is_free) {
+    punit->veteran = MAX(punit->veteran
+                         - game.server.autoupgrade_veteran_loss, 0);
   } else {
-    punit->veteran = MIN(punit->veteran,
-                         utype_veteran_system(to_unit)->levels - 1);
-    if (is_free) {
-      punit->veteran = MAX(punit->veteran
-                           - game.server.autoupgrade_veteran_loss, 0);
-    } else {
-      punit->veteran = MAX(punit->veteran
-                           - game.server.upgrade_veteran_loss, 0);
-    }
+    punit->veteran = MAX(punit->veteran
+                         - game.server.upgrade_veteran_loss, 0);
   }
 
   /* Scale HP and MP, rounding down.  Be careful with integer arithmetic,
@@ -1502,11 +1567,12 @@ struct unit *create_unit_full(struct player *pplayer, struct tile *ptile,
   return punit;
 }
 
-/**************************************************************************
+/****************************************************************************
   We remove the unit and see if it's disappearance has affected the homecity
   and the city it was in.
-**************************************************************************/
-static void server_remove_unit(struct unit *punit, enum unit_loss_reason reason)
+****************************************************************************/
+static void server_remove_unit_full(struct unit *punit, bool transported,
+                                    enum unit_loss_reason reason)
 {
   struct packet_unit_remove packet;
   struct tile *ptile = unit_tile(punit);
@@ -1543,7 +1609,8 @@ static void server_remove_unit(struct unit *punit, enum unit_loss_reason reason)
   packet.unit_id = punit->id;
   /* Send to onlookers. */
   players_iterate(aplayer) {
-    if (can_player_see_unit(aplayer, punit)) {
+    if (can_player_see_unit_at(aplayer, punit, unit_tile(punit),
+                               transported)) {
       lsend_packet_unit_remove(aplayer->connections, &packet);
     }
   } players_iterate_end;
@@ -1601,6 +1668,16 @@ static void server_remove_unit(struct unit *punit, enum unit_loss_reason reason)
   }
 }
 
+/****************************************************************************
+  We remove the unit and see if it's disappearance has affected the homecity
+  and the city it was in.
+****************************************************************************/
+static void server_remove_unit(struct unit *punit,
+                               enum unit_loss_reason reason)
+{
+  server_remove_unit_full(punit, unit_transported(punit), reason);
+}
+
 /**************************************************************************
   Handle units destroyed when their transport is destroyed
 **************************************************************************/
@@ -1613,15 +1690,16 @@ static void unit_lost_with_transport(const struct player *pplayer,
                 _("%s lost when %s was lost."),
                 unit_tile_link(pcargo),
                 utype_name_translation(ptransport));
-  wipe_unit(pcargo, ULR_TRANSPORT_LOST, killer);
+  wipe_unit_full(pcargo, TRUE, ULR_TRANSPORT_LOST, killer);
 }
 
-/**************************************************************************
-  Remove the unit, and passengers if it is a carrying any. Remove the 
+/****************************************************************************
+  Remove the unit, and passengers if it is a carrying any. Remove the
   _minimum_ number, eg there could be another boat on the square.
-**************************************************************************/
-void wipe_unit(struct unit *punit, enum unit_loss_reason reason,
-               struct player *killer)
+****************************************************************************/
+static void wipe_unit_full(struct unit *punit, bool transported,
+                           enum unit_loss_reason reason,
+                           struct player *killer)
 {
   struct tile *ptile = unit_tile(punit);
   struct player *pplayer = unit_owner(punit);
@@ -1629,10 +1707,12 @@ void wipe_unit(struct unit *punit, enum unit_loss_reason reason,
   struct unit_list *helpless = unit_list_new();
   struct unit_list *imperiled = unit_list_new();
   struct unit_list *unsaved = unit_list_new();
+  struct unit *ptrans = unit_transport_get(punit);
 
   /* Remove unit itself from its transport */
-  if (unit_transport_get(punit) != NULL) {
-    unit_transport_unload_send(punit);
+  if (ptrans != NULL) {
+    unit_transport_unload(punit);
+    send_unit_info(NULL, ptrans);
   }
 
   /* First pull all units off of the transporter. */
@@ -1672,7 +1752,7 @@ void wipe_unit(struct unit *punit, enum unit_loss_reason reason,
   }
 
   /* Now remove the unit. */
-  server_remove_unit(punit, reason);
+  server_remove_unit_full(punit, transported, reason);
 
   switch (reason) {
   case ULR_KILLED:
@@ -1778,6 +1858,16 @@ void wipe_unit(struct unit *punit, enum unit_loss_reason reason,
 }
 
 /****************************************************************************
+  Remove the unit, and passengers if it is a carrying any. Remove the
+  _minimum_ number, eg there could be another boat on the square.
+****************************************************************************/
+void wipe_unit(struct unit *punit, enum unit_loss_reason reason,
+               struct player *killer)
+{
+  wipe_unit_full(punit, unit_transported(punit), reason, killer);
+}
+
+/****************************************************************************
   Determine if it is possible to save a given unit, and if so, save them.
   Note that despite being saved from drowning, teleporting the units to
   "safety" may have killed them in the end.
@@ -1787,7 +1877,7 @@ bool try_to_save_unit(struct unit *punit, struct unit_type *pttype,
 {
   struct tile *ptile = unit_tile(punit);
   struct player *pplayer = unit_owner(punit);
-  struct unit *ptransport = transport_from_tile(punit, ptile);
+  struct unit *ptransport = transporter_for_unit(punit);
 
   /* Helpless units cannot board a transport in their current state. */
   if (!helpless
@@ -1844,8 +1934,7 @@ struct unit *unit_change_owner(struct unit *punit, struct player *pplayer,
   gained_unit->paradropped = punit->paradropped;
   gained_unit->server.birth_turn = punit->server.birth_turn;
 
-  /* Inform owner about less than full fuel */
-  send_unit_info(pplayer, gained_unit);
+  send_unit_info(NULL, gained_unit);
 
   /* update unit upkeep in the homecity of the victim */
   if (punit->homecity > 0) {
@@ -1900,7 +1989,7 @@ void kill_unit(struct unit *pkiller, struct unit *punit, bool vet)
         break;
       } else {
         log_debug("Pressed tech %s from captured enemy",
-                  research_advance_rule_name(research_get(pvictor), ttid));
+                  advance_name_for_player(pvictor, ttid));
         if (!fc_rand(3)) {
           break; /* out of luck */
         }
@@ -1942,7 +2031,8 @@ void kill_unit(struct unit *pkiller, struct unit *punit, bool vet)
              * give verbose messages of every unit transferred,
              * and raze buildings according to raze chance
              * (also removes palace) */
-            (void) transfer_city(pvictor, pcity, 7, TRUE, TRUE, TRUE, TRUE);
+            (void) transfer_city(pvictor, pcity, 7, TRUE, TRUE, TRUE,
+                                 !is_barbarian(pvictor));
             submit = FALSE;
           }
           if (conqsize <= 0) {
@@ -2152,19 +2242,37 @@ void package_unit(struct unit *punit, struct packet_unit_info *packet)
   packet->activity = punit->activity;
   packet->activity_count = punit->activity_count;
 
-  if (punit->activity_target != NULL) {
-    packet->activity_tgt = extra_index(punit->activity_target);
-  } else {
-    packet->activity_tgt = EXTRA_NONE;
+  packet->activity_tgt_spe = S_LAST;
+  packet->activity_tgt_base = BASE_NONE;
+  packet->activity_tgt_road = ROAD_NONE;
+  switch (punit->activity_target.type) {
+    case ATT_SPECIAL:
+      packet->activity_tgt_spe = punit->activity_target.obj.spe;
+      break;
+    case ATT_BASE:
+      packet->activity_tgt_base = punit->activity_target.obj.base;
+      break;
+    case ATT_ROAD:
+      packet->activity_tgt_road = punit->activity_target.obj.road;
+      break;
   }
 
   packet->changed_from = punit->changed_from;
   packet->changed_from_count = punit->changed_from_count;
 
-  if (punit->changed_from_target != NULL) {
-    packet->changed_from_tgt = extra_index(punit->changed_from_target);
-  } else {
-    packet->changed_from_tgt = EXTRA_NONE;
+  packet->changed_from_tgt_spe = S_LAST;
+  packet->changed_from_tgt_base = BASE_NONE;
+  packet->changed_from_tgt_road = ROAD_NONE;
+  switch (punit->changed_from_target.type) {
+    case ATT_SPECIAL:
+      packet->changed_from_tgt_spe = punit->changed_from_target.obj.spe;
+      break;
+    case ATT_BASE:
+      packet->changed_from_tgt_base = punit->changed_from_target.obj.base;
+      break;
+    case ATT_ROAD:
+      packet->changed_from_tgt_road = punit->changed_from_target.obj.road;
+      break;
   }
 
   packet->ai = punit->ai_controlled;
@@ -2194,7 +2302,8 @@ void package_unit(struct unit *punit, struct packet_unit_info *packet)
       packet->orders[i] = punit->orders.list[i].order;
       packet->orders_dirs[i] = punit->orders.list[i].dir;
       packet->orders_activities[i] = punit->orders.list[i].activity;
-      packet->orders_targets[i] = punit->orders.list[i].target;
+      packet->orders_bases[i] = punit->orders.list[i].base;
+      packet->orders_roads[i] = punit->orders.list[i].road;
     }
   } else {
     packet->orders_length = packet->orders_index = 0;
@@ -2241,10 +2350,13 @@ void package_short_unit(struct unit *punit,
     packet->activity = punit->activity;
   }
 
-  if (punit->activity_target == NULL) {
-    packet->activity_tgt = EXTRA_NONE;
-  } else {
-    packet->activity_tgt = extra_index(punit->activity_target);
+  packet->activity_tgt_base = BASE_NONE;
+  packet->activity_tgt_road = ROAD_NONE;
+
+  if (packet->activity == ACTIVITY_BASE) {
+    packet->activity_tgt_base = punit->activity_target.obj.base;
+  } else if (packet->activity == ACTIVITY_GEN_ROAD) {
+    packet->activity_tgt_road = punit->activity_target.obj.road;
   }
 
   /* Transported_by information is sent to the client even for units that
@@ -2258,6 +2370,8 @@ void package_short_unit(struct unit *punit,
     packet->transported = TRUE;
     packet->transported_by = unit_transport_get(punit)->id;
   }
+
+  packet->goes_out_of_sight = FALSE;
 }
 
 /**************************************************************************
@@ -2265,111 +2379,62 @@ void package_short_unit(struct unit *punit,
 **************************************************************************/
 void unit_goes_out_of_sight(struct player *pplayer, struct unit *punit)
 {
-  dlsend_packet_unit_remove(pplayer->connections, punit->id);
+  if (unit_owner(punit) == pplayer) {
+    /* Unit is either about to die, or to change owner (civil war, bribe) */
+    struct packet_unit_remove packet;
+
+    packet.unit_id = punit->id;
+    lsend_packet_unit_remove(pplayer->connections, &packet);
+  } else {
+    struct packet_unit_short_info packet;
+
+    memset(&packet, 0, sizeof(packet));
+    packet.id = punit->id;
+    packet.goes_out_of_sight = TRUE;
+    lsend_packet_unit_short_info(pplayer->connections, &packet);
+  }
 }
 
-/**************************************************************************
-  Send the unit into to those connections in dest which can see the units
-  at its position, or the specified ptile (if different).
-  Eg, use old_tile as where the unit came from, so that the info can be
-  sent if the other players can see either the target or destination tile.
+/****************************************************************************
+  send the unit to the players who need the info.
   dest = NULL means all connections (game.est_connections)
-  was_transported tells whether the unit was previously transported.
-**************************************************************************/
-static void send_unit_info_to_onlookers(struct conn_list *dest,
-                                        struct unit *punit,
-                                        struct tile *old_tile,
-                                        bool was_transported)
+****************************************************************************/
+void send_unit_info(struct conn_list *dest, struct unit *punit)
 {
-  struct packet_unit_info info;
+  const struct player *powner;
+  struct packet_unit_info info[GAME_TRANSPORT_MAX_RECURSIVE + 1];
   struct packet_unit_short_info sinfo;
-  
-  if (!dest) {
+  int info_num;
+  int i;
+
+  if (dest == NULL) {
     dest = game.est_connections;
   }
 
   CHECK_UNIT(punit);
 
-  package_unit(punit, &info);
+  powner = unit_owner(punit);
+  package_unit(punit, &info[0]);
+  i = 1;
+  unit_transports_iterate(punit, ptrans) {
+    fc_assert_action(i < ARRAY_SIZE(info), break);
+    package_unit(punit, &info[i++]);
+  } unit_transports_iterate_end;
+  info_num = i;
   package_short_unit(punit, &sinfo, UNIT_INFO_IDENTITY, 0, FALSE);
 
   conn_list_iterate(dest, pconn) {
-    struct player *pplayer = pconn->playing;
+    struct player *pplayer = conn_get_player(pconn);
 
     /* Be careful to consider all cases where pplayer is NULL... */
-    if ((!pplayer && pconn->observer) || pplayer == unit_owner(punit)) {
-      /* If the unit is transported, go recursive up and send information
-       * about the transporters. */
-      send_unit_info_to_onlookers_transport(pconn, punit);
-
-      send_packet_unit_info(pconn, &info);
-    } else if (NULL != pplayer
-               && (can_player_see_unit(pplayer, punit)
-                   || (unit_tile(punit) != old_tile
-                       && can_player_see_unit_at(pplayer, punit, old_tile,
-                                                 was_transported)))) {
+    if (pplayer == powner || (pplayer == NULL && pconn->observer)) {
+      for (i = info_num - 1; i >= 0; i--) {
+        send_packet_unit_info(pconn, &info[i]);
+      }
+    } else if (pplayer != NULL && can_player_see_unit(pplayer, punit)) {
       send_packet_unit_short_info(pconn, &sinfo);
     }
   } conn_list_iterate_end;
-}
-
-/**************************************************************************
-  Remove unit from client if it has gone out of sight by moving from
-  old_tile to current tile.
-**************************************************************************/
-static void remove_unit_gone_out_of_sight(struct conn_list *dest,
-                                          struct unit *punit,
-                                          struct tile *old_tile,
-                                          bool old_transported)
-{
-  if (!dest) {
-    dest = game.est_connections;
-  }
-
-  conn_list_iterate(dest, pconn) {
-    struct player *pplayer = pconn->playing;
-
-    /* Player can be NULL either since connection is global observer,
-     * or new connection that has not yet attached to player */
-    if (pplayer != NULL
-        && can_player_see_unit_at(pplayer, punit, old_tile, old_transported)
-        && !can_player_see_unit(pplayer, punit)) {
-      unit_goes_out_of_sight(pplayer, punit);
-    }
-  } conn_list_iterate_end;
-}
-
-/*****************************************************************************
-  Recursively send information about the transporter for punit to dest. This
-  is a helper function for send_unit_info_to_onlookers().
-**************************************************************************/
-static void send_unit_info_to_onlookers_transport(struct connection *pconn,
-                                                  struct unit *punit)
-{
-  struct unit *ptrans;
-
-  fc_assert_ret(punit);
-
-  ptrans = unit_transport_get(punit);
-  if (ptrans) {
-    struct packet_unit_info info_trans;
-
-    send_unit_info_to_onlookers_transport(pconn, ptrans);
-
-    package_unit(ptrans, &info_trans);
-    send_packet_unit_info(pconn, &info_trans);
-  }
-}
-
-/**************************************************************************
-  send the unit to the players who need the info 
-  dest = NULL means all connections (game.est_connections)
-**************************************************************************/
-void send_unit_info(struct player *dest, struct unit *punit)
-{
-  struct conn_list *conn_dest = (dest ? dest->connections
-				 : game.est_connections);
-  send_unit_info_to_onlookers(conn_dest, punit, unit_tile(punit), FALSE);
 }
 
 /**************************************************************************
@@ -2388,10 +2453,7 @@ void send_all_known_units(struct conn_list *dest)
 
     players_iterate(unitowner) {
       unit_list_iterate(unitowner->units, punit) {
-	if (!pplayer || can_player_see_unit(pplayer, punit)) {
-          send_unit_info_to_onlookers(pconn->self, punit, unit_tile(punit),
-                                      FALSE);
-	}
+        send_unit_info(dest, punit);
       } unit_list_iterate_end;
     } players_iterate_end;
   }
@@ -2448,12 +2510,16 @@ static void do_nuke_tile(struct player *pplayer, struct tile *ptile)
 
   if (!terrain_has_flag(tile_terrain(ptile), TER_NO_POLLUTION)
       && fc_rand(2) == 1) {
-    struct extra_type *pextra;
-
-    pextra = rand_extra_for_tile(ptile, EC_FALLOUT);
-    if (pextra != NULL && !tile_has_extra(ptile, pextra)) {
-      tile_add_extra(ptile, pextra);
-      update_tile_knowledge(ptile);
+    if (game.server.nuke_contamination == CONTAMINATION_POLLUTION) {
+      if (!tile_has_special(ptile, S_POLLUTION)) {
+	tile_set_special(ptile, S_POLLUTION);
+	update_tile_knowledge(ptile);
+      }
+    } else {
+      if (!tile_has_special(ptile, S_FALLOUT)) {
+	tile_set_special(ptile, S_FALLOUT);
+	update_tile_knowledge(ptile);
+      }
     }
   }
 }
@@ -2596,8 +2662,7 @@ void do_explore(struct unit *punit)
 bool do_paradrop(struct unit *punit, struct tile *ptile)
 {
   struct player *pplayer = unit_owner(punit);
-  struct player_tile *plrtile;
-  struct unit *ptransport = NULL;
+  int range, distance;
 
   if (!unit_has_type_flag(punit, UTYF_PARATROOPERS)) {
     notify_player(pplayer, unit_tile(punit), E_BAD_COMMAND, ftc_server,
@@ -2621,70 +2686,96 @@ bool do_paradrop(struct unit *punit, struct tile *ptile)
     return FALSE;
   }
 
-  plrtile = map_get_player_tile(ptile, pplayer);
-
-  if (game.info.paradrop_to_transport) {
-    ptransport = transport_from_tile(punit, ptile);
-  }
-
-  /* Safe terrain according to player map? */
-  if (!is_native_to_class(unit_class(punit),
-                          plrtile->terrain,
-                          plrtile->extras)
-      && (ptransport == NULL
-          || !can_player_see_unit(pplayer, ptransport))) {
+  range = unit_type(punit)->paratroopers_range;
+  distance = real_map_distance(unit_tile(punit), ptile);
+  if (distance > range) {
     notify_player(pplayer, ptile, E_BAD_COMMAND, ftc_server,
-                  _("This unit cannot paradrop into %s."),
-                  terrain_name_translation(
-                      map_get_player_tile(ptile, pplayer)->terrain));
+                  _("The distance to the target (%i) "
+                    "is greater than the unit's range (%i)."),
+                  distance, range);
     return FALSE;
   }
 
-  if (map_is_known_and_seen(ptile, pplayer, V_MAIN)
-      && ((tile_city(ptile)
-           && pplayers_non_attack(pplayer, city_owner(tile_city(ptile))))
-      || is_non_attack_unit_tile(ptile, pplayer))) {
-    notify_player(pplayer, ptile, E_BAD_COMMAND, ftc_server,
-                  _("Cannot attack unless you declare war first."));
-    return FALSE;
-  }
-
-  if (is_military_unit(punit)
-      && !player_can_invade_tile(pplayer, ptile)) {
-    notify_player(pplayer, ptile, E_BAD_COMMAND, ftc_server,
-                  _("Cannot invade unless you break peace with "
-                    "%s first."),
-                  player_name(tile_owner(ptile)));
-    return FALSE;
-  }
-
-  {
-    int range = unit_type(punit)->paratroopers_range;
-    int distance = real_map_distance(unit_tile(punit), ptile);
-    if (distance > range) {
+  if (map_is_known_and_seen(ptile, pplayer, V_MAIN)) {
+    if (!can_unit_exist_at_tile(punit, ptile)
+        && (!game.info.paradrop_to_transport
+            || NULL == transport_from_tile(punit, ptile))) {
       notify_player(pplayer, ptile, E_BAD_COMMAND, ftc_server,
-                    _("The distance to the target (%i) "
-                      "is greater than the unit's range (%i)."),
-                    distance, range);
+                    _("This unit cannot paradrop into %s."),
+                    terrain_name_translation(tile_terrain(ptile)));
       return FALSE;
+    }
+
+    if (NULL != is_non_attack_city_tile(ptile, pplayer)) {
+      notify_player(pplayer, ptile, E_BAD_COMMAND, ftc_server,
+                    _("Cannot attack unless you declare war first."));
+      return FALSE;
+    }
+
+    unit_list_iterate(ptile->units, pother) {
+      if (can_player_see_unit(pplayer, pother)
+          && pplayers_non_attack(pplayer, unit_owner(pother))) {
+        notify_player(pplayer, ptile, E_BAD_COMMAND, ftc_server,
+                      _("Cannot attack unless you declare war first."));
+        return FALSE;
+      }
+    } unit_list_iterate_end;
+
+    if (is_military_unit(punit)
+        && !player_can_invade_tile(pplayer, ptile)) {
+      notify_player(pplayer, ptile, E_BAD_COMMAND, ftc_server,
+                    _("Cannot invade unless you break peace with "
+                      "%s first."),
+                    player_name(tile_owner(ptile)));
+      return FALSE;
+    }
+  } else {
+    /* Only take in account values from player map. */
+    const struct player_tile *plrtile = map_get_player_tile(ptile, pplayer);
+
+    if (NULL == plrtile->site
+        && !is_native_to_class(unit_class(punit), plrtile->terrain,
+                               plrtile->bases, plrtile->roads)) {
+      notify_player(pplayer, ptile, E_BAD_COMMAND, ftc_server,
+                    _("This unit cannot paradrop into %s."),
+                    terrain_name_translation(plrtile->terrain));
+      return FALSE;
+    }
+
+    if (NULL != plrtile->site
+        && plrtile->owner != NULL
+        && pplayers_non_attack(pplayer, plrtile->owner)) {
+      notify_player(pplayer, ptile, E_BAD_COMMAND, ftc_server,
+                    _("Cannot attack unless you declare war first."));
+      return FALSE;
+    }
+
+    if (is_military_unit(punit)
+        && NULL != plrtile->owner
+        && players_non_invade(pplayer, plrtile->owner)) {
+      notify_player(pplayer, ptile, E_BAD_COMMAND, ftc_server,
+                    _("Cannot invade unless you break peace with "
+                      "%s first."),
+                    player_name(plrtile->owner));
+      return FALSE;
+    }
+
+    /* Safe terrain, really? Not transformed since player last saw it. */
+    if (!can_unit_exist_at_tile(punit, ptile)
+        && (!game.info.paradrop_to_transport
+            || NULL == transport_from_tile(punit, ptile))) {
+      map_show_circle(pplayer, ptile, unit_type(punit)->vision_radius_sq);
+      notify_player(pplayer, ptile, E_UNIT_LOST_MISC, ftc_server,
+                    _("Your %s paradropped into the %s and was lost."),
+                    unit_tile_link(punit),
+                    terrain_name_translation(tile_terrain(ptile)));
+      pplayer->score.units_lost++;
+      server_remove_unit(punit, ULR_NONNATIVE_TERR);
+      return TRUE;
     }
   }
 
-  /* Safe terrain, really? Not transformed since player last saw it. */
-  if (ptransport == NULL
-      && !can_unit_exist_at_tile(punit, ptile)) {
-    map_show_circle(pplayer, ptile, unit_type(punit)->vision_radius_sq);
-    notify_player(pplayer, ptile, E_UNIT_LOST_MISC, ftc_server,
-                  _("Your %s paradropped into the %s and was lost."),
-                  unit_tile_link(punit),
-                  terrain_name_translation(tile_terrain(ptile)));
-    pplayer->score.units_lost++;
-    server_remove_unit(punit, ULR_NONNATIVE_TERR);
-    return TRUE;
-  }
-
-  if ((tile_city(ptile)
-       && pplayers_non_attack(pplayer, city_owner(tile_city(ptile))))
+  if (is_non_attack_city_tile(ptile, pplayer)
       || is_non_allied_unit_tile(ptile, pplayer)) {
     map_show_circle(pplayer, ptile, unit_type(punit)->vision_radius_sq);
     maybe_make_contact(ptile, pplayer);
@@ -2701,16 +2792,13 @@ bool do_paradrop(struct unit *punit, struct tile *ptile)
   }
 
   /* All ok */
-  {
-    int move_cost = unit_type(punit)->paratroopers_mr_sub;
-    punit->paradropped = TRUE;
-    unit_move(punit, ptile, move_cost);
-    if (ptransport != NULL
-        && !can_unit_exist_at_tile(punit, ptile)) {
-      unit_transport_load_tp_status(punit, ptransport, FALSE);
-    }
-    return TRUE;
+  punit->paradropped = TRUE;
+  if (unit_move(punit, ptile, unit_type(punit)->paratroopers_mr_sub)) {
+    /* Ensure we finished on valid state. */
+    fc_assert(can_unit_exist_at_tile(punit, unit_tile(punit))
+              || unit_transported(punit));
   }
+  return TRUE;
 }
 
 /**************************************************************************
@@ -2752,7 +2840,6 @@ static void unit_enter_hut(struct unit *punit)
 {
   struct player *pplayer = unit_owner(punit);
   enum hut_behavior behavior = unit_class(punit)->hut_behavior;
-  struct tile *ptile = unit_tile(punit);
 
   /* FIXME: Should we still run "hut_enter" script when
    *        hut_behavior is HUT_NOTHING or HUT_FRIGHTEN? */ 
@@ -2760,31 +2847,24 @@ static void unit_enter_hut(struct unit *punit)
     return;
   }
 
-  extra_type_by_cause_iterate(EC_HUT, pextra) {
-    if (tile_has_extra(ptile, pextra)) {
-      pplayer->server.huts++;
+  tile_clear_special(unit_tile(punit), S_HUT);
+  update_tile_knowledge(unit_tile(punit));
 
-      tile_remove_extra(ptile, pextra);
-      update_tile_knowledge(unit_tile(punit));
-
-      if (behavior == HUT_FRIGHTEN) {
-        notify_player(pplayer, unit_tile(punit), E_HUT_BARB, ftc_server,
-                      _("Your overflight frightens the tribe;"
-                        " they scatter in terror."));
-        return;
-      }
+  if (behavior == HUT_FRIGHTEN) {
+    notify_player(pplayer, unit_tile(punit), E_HUT_BARB, ftc_server,
+                  _("Your overflight frightens the tribe;"
+                    " they scatter in terror."));
+    return;
+  }
   
-      /* AI with H_LIMITEDHUTS only gets 25 gold (or barbs if unlucky) */
-      if (pplayer->ai_controlled && has_handicap(pplayer, H_LIMITEDHUTS)) {
-        (void) hut_get_limited(punit);
-        return;
-      }
+  /* AI with H_LIMITEDHUTS only gets 25 gold (or barbs if unlucky) */
+  if (pplayer->ai_controlled && ai_handicap(pplayer, H_LIMITEDHUTS)) {
+    (void) hut_get_limited(punit);
+    return;
+  }
 
-      /* FIXME: Should have parameter for hut extra type */
-      script_server_signal_emit("hut_enter", 1,
-                                API_TYPE_UNIT, punit);
-    }
-  } extra_type_by_cause_iterate_end;
+  script_server_signal_emit("hut_enter", 1,
+                            API_TYPE_UNIT, punit);
 
   send_player_info_c(pplayer, pplayer->connections); /* eg, gold */
   return;
@@ -3216,6 +3296,95 @@ static void check_unit_activity(struct unit *punit)
   };
 }
 
+struct unit_move_data {
+  struct unit *punit;
+  int unit_id;
+  const struct player *powner;
+  bv_player can_see_unit_at_src;
+  bv_player can_see_unit_at_dest;
+  struct vision *old_vision;
+};
+
+#define SPECLIST_TAG unit_move_data
+#include "speclist.h"
+#define unit_move_data_list_iterate(_plist, _pdata)                         \
+  TYPED_LIST_ITERATE(struct unit_move_data, _plist, _pdata)
+#define unit_move_data_list_iterate_end LIST_ITERATE_END
+#define unit_move_data_list_both_iterate(_plist, _plink, _pdata)            \
+  TYPED_LIST_BOTH_ITERATE(struct unit_move_data_list_link,                  \
+                          struct unit_move_data, _plist, _plink, _pdata)
+#define unit_move_data_list_both_iterate_end LIST_BOTH_ITERATE_END
+#define unit_move_data_list_iterate_rev(_plist, _pdata)                     \
+  TYPED_LIST_ITERATE_REV(struct unit_move_data, _plist, _pdata)
+#define unit_move_data_list_iterate_rev_end LIST_ITERATE_REV_END
+
+/****************************************************************************
+  Create a new unit move data.
+****************************************************************************/
+static struct unit_move_data *unit_move_data_new(struct unit *punit,
+                                                 struct tile *psrctile,
+                                                 struct tile *pdesttile)
+{
+  struct unit_move_data *pdata = fc_malloc(sizeof(*pdata));
+  struct player *powner = unit_owner(punit);
+  const v_radius_t radius_sq =
+        V_RADIUS(get_unit_vision_at(punit, pdesttile, V_MAIN),
+                 get_unit_vision_at(punit, pdesttile, V_INVIS));
+  struct vision *new_vision;
+  bool transported = unit_transported(punit);
+  bool success;
+
+  pdata->punit = punit;
+  pdata->unit_id = punit->id;
+  pdata->powner = powner;
+  BV_CLR_ALL(pdata->can_see_unit_at_src);
+  BV_CLR_ALL(pdata->can_see_unit_at_dest);
+  players_iterate(pplayer) {
+    if (pplayer == powner
+        || can_player_see_unit_at(pplayer, punit, psrctile, transported)) {
+      BV_SET(pdata->can_see_unit_at_src, player_index(pplayer));
+    }
+    if (pplayer == powner
+        || can_player_see_unit_at(pplayer, punit, pdesttile, transported)) {
+      BV_SET(pdata->can_see_unit_at_dest, player_index(pplayer));
+    }
+  } players_iterate_end;
+  pdata->old_vision = punit->server.vision;
+
+  /* Remove unit from the source tile. */
+  fc_assert(unit_tile(punit) == psrctile);
+  success = unit_list_remove(psrctile->units, punit);
+  fc_assert(success == TRUE);
+
+  /* Set new tile. */
+  unit_tile_set(punit, pdesttile);
+  unit_list_prepend(pdesttile->units, punit);
+
+  if (transported) {
+    /* Silently free orders since they won't be applicable anymore. */
+    free_unit_orders(punit);
+  }
+
+  /* Check unit activity. */
+  check_unit_activity(punit);
+  unit_did_action(punit);
+  unit_forget_last_activity(punit);
+
+  /* We first unfog the destination, then send the move,
+   * and then fog the old territory. This means that the player
+   * gets a chance to see the newly explored territory while the
+   * client moves the unit, and both areas are visible during the
+   * move */
+
+  /* Enhance vision if unit steps into a fortress */
+  new_vision = vision_new(powner, pdesttile);
+  punit->server.vision = new_vision;
+  vision_change_sight(new_vision, radius_sq);
+  ASSERT_VISION(new_vision);
+
+  return pdata;
+}
+
 /*****************************************************************************
   Moves a unit. No checks whatsoever! This is meant as a practical
   function for other functions, like do_airline, which do the checking
@@ -3233,14 +3402,15 @@ bool unit_move(struct unit *punit, struct tile *pdesttile, int move_cost)
   struct tile *psrctile;
   struct city *pcity;
   struct unit *ptransporter;
-  struct vision *old_vision;
-  struct vision *new_vision;
-  struct unit_list *pcargo_units;
+  struct packet_unit_info src_info, dest_info;
+  struct packet_unit_short_info src_sinfo, dest_sinfo;
+  struct unit_move_data_list *plist =
+      unit_move_data_list_new_full((unit_move_data_list_free_fn_t) free);
+  struct unit_move_data *pdata;
   int saved_id;
   bool unit_lives = TRUE;
   bool adj;
   enum direction8 facing;
-  struct player *bowner;
 
   /* Some checks. */
   fc_assert_ret_val(punit != NULL, FALSE);
@@ -3248,10 +3418,10 @@ bool unit_move(struct unit *punit, struct tile *pdesttile, int move_cost)
 
   pplayer = unit_owner(punit);
   saved_id = punit->id;
-  old_vision = punit->server.vision;
   psrctile = unit_tile(punit);
+  adj = base_get_direction_for_step(psrctile, pdesttile, &facing);
 
-  conn_list_do_buffer(pplayer->connections);
+  conn_list_do_buffer(game.est_connections);
 
   /* Unload the unit if on a transport. */
   ptransporter = unit_transport_get(punit);
@@ -3261,30 +3431,26 @@ bool unit_move(struct unit *punit, struct tile *pdesttile, int move_cost)
     /* Send updated information to anyone watching that transporter
      * was unloading cargo. */
     send_unit_info(NULL, ptransporter);
-    send_unit_info(NULL, punit);
   }
 
   /* Wakup units next to us before we move. */
   wakeup_neighbor_sentries(punit);
 
-  /* Remove unit from the source tile. */
-  unit_list_remove(psrctile->units, punit);
+  /* Make info packets at 'psrctile'. */
+  if (adj) {
+    package_unit(punit, &src_info);
+    package_short_unit(punit, &src_sinfo, UNIT_INFO_IDENTITY, 0, FALSE);
+  }
+
+  /* Make new data for 'punit'. */
+  pdata = unit_move_data_new(punit, psrctile, pdesttile);
+  unit_move_data_list_prepend(plist, pdata);
 
   /* Set unit orientation */
-  adj = base_get_direction_for_step(psrctile, pdesttile, &facing);
   if (adj) {
     /* Only change orientation when moving to adjacent tile */
     punit->facing = facing;
   }
-
-  /* Set new tile. */
-  unit_tile_set(punit, pdesttile);
-  unit_list_prepend(pdesttile->units, punit);
-
-  /* Check unit activity. */
-  check_unit_activity(punit);
-  unit_did_action(punit);
-  unit_forget_last_activity(punit);
 
   /* Move magic. */
   punit->moved = TRUE;
@@ -3293,42 +3459,154 @@ bool unit_move(struct unit *punit, struct tile *pdesttile, int move_cost)
     punit->done_moving = TRUE;
   }
 
-  /* We first unfog the destination, then send the move,
-     and then fog the old territory. This means that the player
-     gets a chance to see the newly explored territory while the
-     client moves the unit, and both areas are visible during the
-     move */
-
-  /* Enhance vision if unit steps into a fortress */
-  const v_radius_t radius_sq =
-      V_RADIUS(get_unit_vision_at(punit, pdesttile, V_MAIN),
-               get_unit_vision_at(punit, pdesttile, V_INVIS));
-  new_vision = vision_new(unit_owner(punit), pdesttile);
-  punit->server.vision = new_vision;
-  vision_change_sight(new_vision, radius_sq);
-  ASSERT_VISION(new_vision);
-
   /* Claim ownership of fortress? */
-  bowner = base_owner(pdesttile);
-  if ((bowner == NULL || pplayers_at_war(bowner, pplayer))
+  if ((!base_owner(pdesttile)
+       || pplayers_at_war(base_owner(pdesttile), pplayer))
       && tile_has_claimable_base(pdesttile, unit_type(punit))) {
+    struct player *old_owner = base_owner(pdesttile);
+
     /* Yes. We claim *all* bases if there's *any* claimable base(s).
      * Even if original unit cannot claim other kind of bases, the
      * first claimed base will have influence over other bases,
      * or something like that. */
-    tile_claim_bases(pdesttile, pplayer);
+    base_type_iterate(pbase) {
+      map_claim_base(pdesttile, pbase, pplayer, old_owner);
+    } base_type_iterate_end;
   }
 
-  /* Send updated information to anyone watching.  If the unit moves
-   * in or out of a city we update the 'occupied' field.  Note there may
-   * be cities at both src and dest under some rulesets.
-   * If unit is about to take over enemy city, unit is seen by
-   * those players seeing inside cities of old city owner. After city
-   * has been transferred, updated info is sent by unit_enter_city() */
-  send_unit_info_to_onlookers(NULL, punit, psrctile, FALSE);
+  /* Move all contained units. */
+  unit_cargo_iterate(punit, pcargo) {
+    pdata = unit_move_data_new(pcargo, psrctile, pdesttile);
+    unit_move_data_list_append(plist, pdata);
+  } unit_cargo_iterate_end;
 
-  /* Move consequences and wakeup. */
-  unit_lives = unit_move_consequences(punit, psrctile, pdesttile, FALSE);
+  /* Get data for 'punit'. */
+  pdata = unit_move_data_list_front(plist);
+
+  /* Check timeout settings. */
+  if (game.info.timeout != 0 && game.server.timeoutaddenemymove > 0) {
+    bool new_information_for_enemy = FALSE;
+
+    phase_players_iterate(penemy) {
+      /* Increase the timeout if an enemy unit moves and the
+       * timeoutaddenemymove setting is in use. */
+      if (penemy->is_connected
+          && pplayer != penemy
+          && pplayers_at_war(pplayer, penemy)
+          && (BV_ISSET(pdata->can_see_unit_at_src, player_index(penemy))
+              || BV_ISSET(pdata->can_see_unit_at_dest,
+                          player_index(penemy)))) {
+        new_information_for_enemy = TRUE;
+        break;
+      }
+    } phase_players_iterate_end;
+
+    if (new_information_for_enemy) {
+      increase_timeout_because_unit_moved();
+    }
+  }
+
+  /* Notifications of the move to the clients. */
+  if (adj) {
+    /* Special case: 'punit' is moving to adjacent position. Then we show
+     * 'punit' move to all users able to see 'psrctile' or 'pdesttile'. */
+
+    /* Make info packets at 'pdesttile'. */
+    package_unit(punit, &dest_info);
+    package_short_unit(punit, &dest_sinfo, UNIT_INFO_IDENTITY, 0, FALSE);
+
+    conn_list_iterate(game.est_connections, pconn) {
+      struct player *aplayer = conn_get_player(pconn);
+
+      if (aplayer == pplayer || (aplayer == NULL && pconn->observer)) {
+        send_packet_unit_info(pconn, &src_info);
+        send_packet_unit_info(pconn, &dest_info);
+      } else if (aplayer != NULL
+                 && (BV_ISSET(pdata->can_see_unit_at_src,
+                              player_index(aplayer))
+                     || BV_ISSET(pdata->can_see_unit_at_dest,
+                                 player_index(aplayer)))) {
+        send_packet_unit_short_info(pconn, &src_sinfo);
+        send_packet_unit_short_info(pconn, &dest_sinfo);
+      }
+    } conn_list_iterate_end;
+  }
+
+  /* Other moves. */
+  unit_move_data_list_iterate(plist, pmove_data) {
+    if (adj && pmove_data == pdata) {
+      /* If positions are adjacent, we have already shown 'punit' move.
+       * See above. */
+      continue;
+    }
+
+    /* Make info packets at 'pdesttile'. */
+    package_unit(pmove_data->punit, &dest_info);
+    package_short_unit(pmove_data->punit, &dest_sinfo,
+                       UNIT_INFO_IDENTITY, 0, FALSE);
+
+    conn_list_iterate(game.est_connections, pconn) {
+      struct player *aplayer = conn_get_player(pconn);
+
+      if (aplayer == pmove_data->powner
+          || (aplayer == NULL && pconn->observer)) {
+        send_packet_unit_info(pconn, &dest_info);
+      } else if (aplayer != NULL
+                 && (BV_ISSET(pmove_data->can_see_unit_at_dest,
+                              player_index(aplayer))
+                     || (adj && BV_ISSET(pmove_data->can_see_unit_at_src,
+                                         player_index(aplayer))))) {
+        send_packet_unit_short_info(pconn, &dest_sinfo);
+      }
+    } conn_list_iterate_end;
+  } unit_move_data_list_iterate_end;
+
+  /* Remove units going out of sight. */
+  unit_move_data_list_iterate_rev(plist, pmove_data) {
+    players_iterate(aplayer) {
+      if (aplayer != pmove_data->powner
+          && BV_ISSET(pmove_data->can_see_unit_at_src, player_index(aplayer))
+          && !BV_ISSET(pmove_data->can_see_unit_at_dest,
+                       player_index(aplayer))) {
+        unit_goes_out_of_sight(aplayer, pmove_data->punit);
+      }
+    } players_iterate_end;
+  } unit_move_data_list_iterate_rev_end;
+
+  /* Clear old vision. */
+  unit_move_data_list_iterate(plist, pmove_data) {
+    vision_clear_sight(pmove_data->old_vision);
+    vision_free(pmove_data->old_vision);
+  } unit_move_data_list_iterate_end;
+
+  /* Move consequences. */
+  unit_move_data_list_both_iterate(plist, plink, pmove_data) {
+    struct unit *aunit = player_unit_by_number(pmove_data->powner,
+                                               pmove_data->unit_id);
+
+    if (aunit == pmove_data->punit && unit_tile(aunit) == pdesttile) {
+      (void) unit_move_consequences(aunit, psrctile, pdesttile,
+                                    pdata != pmove_data);
+    } else {
+      unit_move_data_list_erase(plist, plink);
+    }
+  } unit_move_data_list_both_iterate_end;
+  /* Check alive units. */
+  unit_move_data_list_both_iterate(plist, plink, pmove_data) {
+    struct unit *aunit = player_unit_by_number(pmove_data->powner,
+                                               pmove_data->unit_id);
+
+    if (aunit != pmove_data->punit || unit_tile(aunit) != pdesttile) {
+      unit_move_data_list_erase(plist, plink);
+    }
+  } unit_move_data_list_both_iterate_end;
+  pdata = unit_move_data_list_front(plist);
+  if (pdata == NULL || punit != pdata->punit) {
+    unit_lives = FALSE;
+    pdata = NULL;
+  }
+
+  /* Wakeup units and make contact. */
   if (unit_lives) {
     wakeup_neighbor_sentries(punit);
   }
@@ -3350,6 +3628,17 @@ bool unit_move(struct unit *punit, struct tile *pdesttile, int move_cost)
         }
 
         send_unit_info(NULL, punit);
+        /* Remove units going out of sight. */
+        unit_move_data_list_iterate_rev(plist, pmove_data) {
+          players_iterate(aplayer) {
+            if (aplayer != pmove_data->powner
+                && BV_ISSET(pdata->can_see_unit_at_dest,
+                            player_index(aplayer))
+                && !can_player_see_unit(aplayer, pmove_data->punit)) {
+              unit_goes_out_of_sight(aplayer, punit);
+            }
+          } players_iterate_end;
+        } unit_move_data_list_iterate_rev_end;
       }
     }
   }
@@ -3362,48 +3651,7 @@ bool unit_move(struct unit *punit, struct tile *pdesttile, int move_cost)
     refresh_dumb_city(pcity);
   }
 
-  /* Clear old vision. */
-  vision_clear_sight(old_vision);
-  vision_free(old_vision);
-
   if (unit_lives) {
-    /* Check timeout settings. */
-    if (game.info.timeout != 0 && game.server.timeoutaddenemymove > 0) {
-      bool new_information_for_enemy = FALSE;
-
-      phase_players_iterate(penemy) {
-        /* Increase the timeout if an enemy unit moves and the
-         * timeoutaddenemymove setting is in use. */
-        if (penemy->is_connected
-            && pplayer != penemy
-            && pplayers_at_war(penemy, pplayer)
-            && can_player_see_unit(penemy, punit)) {
-          new_information_for_enemy = TRUE;
-          break;
-        }
-      } phase_players_iterate_end;
-
-      if (new_information_for_enemy) {
-        increase_timeout_because_unit_moved();
-      }
-    }
-  }
-
-  if (unit_lives) {
-    /* Move transported units. */
-    pcargo_units = unit_transport_cargo(punit);
-    if (unit_list_size(pcargo_units) > 0) {
-      unit_move_transported(pcargo_units, psrctile, pdesttile);
-    }
-
-    /* Now cargo is in same tile with transport. Safe to remove units from
-     * clients. */
-    remove_transported_gone_out_of_sight(pcargo_units, psrctile);
-    /* Assume this unit is not transported, because players could see
-     * the unit moving (i.e. after having unloaded). See previous call to
-     * send_unit_info_to_onlookers(). */
-    remove_unit_gone_out_of_sight(NULL, punit, psrctile, FALSE);
-
     /* Let the scripts run ... */
     script_server_signal_emit("unit_moved", 3,
                               API_TYPE_UNIT, punit,
@@ -3418,85 +3666,18 @@ bool unit_move(struct unit *punit, struct tile *pdesttile, int move_cost)
   }
 
   if (unit_lives) {
-    /* Is there a hut? */
-    if (tile_has_cause_extra(pdesttile, EC_HUT)) {
+    /* Is where a hut? */
+    if (tile_has_special(pdesttile, S_HUT)) {
       unit_enter_hut(punit);
       unit_lives = unit_alive(saved_id);
     }
   }
 
-  conn_list_do_unbuffer(pplayer->connections);
+  conn_list_do_unbuffer(game.est_connections);
+
+  unit_move_data_list_destroy(plist);
 
   return unit_lives;
-}
-
-/*****************************************************************************
-  Move transported units to the new tile.
-*****************************************************************************/
-static void unit_move_transported(struct unit_list *units,
-                                  struct tile *psrc, struct tile *pdest)
-{
-  fc_assert_ret(units != NULL);
-  fc_assert_ret(psrc != NULL);
-  fc_assert_ret(pdest != NULL);
-
-  /* Move all units _recursive_!*/
-  unit_list_iterate(units, pcargo) {
-    struct unit_list *pcargo_units = unit_transport_cargo(pcargo);
-    struct vision *old_vision = pcargo->server.vision;
-    struct vision *new_vision = vision_new(unit_owner(pcargo), pdest);
-    const v_radius_t radius_sq =
-      V_RADIUS(get_unit_vision_at(pcargo, pdest, V_MAIN),
-               get_unit_vision_at(pcargo, pdest, V_INVIS));
-
-    fc_assert(unit_tile(pcargo) == psrc);
-
-    if (unit_list_size(pcargo_units) > 0) {
-      /* Move all units transported by 'pcargo'. */
-      unit_move_transported(pcargo_units, psrc, pdest);
-    }
-
-    pcargo->server.vision = new_vision;
-    vision_change_sight(new_vision, radius_sq);
-    ASSERT_VISION(new_vision);
-
-    /* Silently free orders since they won't be applicable anymore. */
-    free_unit_orders(pcargo);
-
-    /* Remove the unit from the old tile. */
-    unit_list_remove(psrc->units, pcargo);
-
-    /* Add the unit to the new tile. */
-    unit_tile_set(pcargo, pdest);
-    unit_list_prepend(pdest->units, pcargo);
-
-    check_unit_activity(pcargo);
-    send_unit_info_to_onlookers(NULL, pcargo, psrc, TRUE);
-
-    vision_clear_sight(old_vision);
-    vision_free(old_vision);
-
-    unit_move_consequences(pcargo, psrc, pdest, TRUE);
-    unit_did_action(pcargo);
-    unit_forget_last_activity(pcargo);
-  } unit_list_iterate_end;
-}
-
-/*****************************************************************************
-  Remove transported units gone out of sight from clients.
-*****************************************************************************/
-static void remove_transported_gone_out_of_sight(struct unit_list *units,
-                                                 struct tile *psrc)
-{
-  unit_list_iterate(units, pcargo) {
-    struct unit_list *pcargo_units = unit_transport_cargo(pcargo);
-
-    if (unit_list_size(pcargo_units) > 0) {
-      remove_transported_gone_out_of_sight(pcargo_units, psrc);
-    }
-
-    remove_unit_gone_out_of_sight(NULL, pcargo, psrc, TRUE);
-  } unit_list_iterate_end;
 }
 
 /**************************************************************************
@@ -3638,7 +3819,7 @@ bool execute_orders(struct unit *punit)
 
     switch (order.order) {
     case ORDER_FULL_MP:
-      if (punit->moves_left != unit_move_rate(punit)) {
+      if (punit->moves_left < unit_move_rate(punit)) {
 	/* If the unit doesn't have full MP then it just waits until the
 	 * next turn.  We assume that the next turn it will have full MP
 	 * (there's no check for that). */
@@ -3665,27 +3846,41 @@ bool execute_orders(struct unit *punit)
       }
     case ORDER_ACTIVITY:
       activity = order.activity;
-      {
-        struct extra_type *pextra = extra_by_number(order.target);
+      if (activity == ACTIVITY_BASE) {
+        Base_type_id base = order.base;
 
-        if (can_unit_do_activity_targeted(punit, activity, pextra)) {
+        if (can_unit_do_activity_base(punit, base)) {
           punit->done_moving = TRUE;
-          set_unit_activity_targeted(punit, activity, pextra);
+          set_unit_activity_base(punit, base);
           send_unit_info(NULL, punit);
           break;
-        } else {
-          if ((activity == ACTIVITY_BASE
-               || activity == ACTIVITY_GEN_ROAD
-               || activity == ACTIVITY_IRRIGATE
-               || activity == ACTIVITY_MINE)
-              && tile_has_extra(unit_tile(punit), pextra)) {
-            break; /* Already built, let's continue. */
-          } else if ((activity == ACTIVITY_POLLUTION
-                      || activity == ACTIVITY_FALLOUT
-                      || activity == ACTIVITY_PILLAGE)
-                     && !tile_has_extra(unit_tile(punit), pextra)) {
-            break; /* Already removed, let's continue. */
-          }
+        } else if (tile_has_base(unit_tile(punit), base_by_number(base))) {
+          break; /* Already built, let's continue. */
+        }
+      } else if (activity == ACTIVITY_GEN_ROAD) {
+        Road_type_id road = order.road;
+
+        if (can_unit_do_activity_road(punit, road)) {
+          punit->done_moving = TRUE;
+          set_unit_activity_road(punit, road);
+          send_unit_info(NULL, punit);
+          break;
+         } else if (tile_has_road(unit_tile(punit), road_by_number(road))) {
+          break; /* Already built, let's continue. */
+        }
+      } else {
+        if (can_unit_do_activity(punit, activity)) {
+          punit->done_moving = TRUE;
+          set_unit_activity(punit, activity);
+          send_unit_info(NULL, punit);
+          break;
+        } else if ((ACTIVITY_MINE == activity
+                    && tile_has_special(unit_tile(punit), S_MINE))
+                   || (ACTIVITY_IRRIGATE == activity
+                       && (tile_has_special(unit_tile(punit), S_FARMLAND)
+                           || tile_has_special(unit_tile(punit),
+                                               S_IRRIGATION)))) {
+          break; /* Already built, let's continue. */
         }
       }
 
@@ -3706,7 +3901,8 @@ bool execute_orders(struct unit *punit)
         return TRUE;
       }
 
-      if (!last_order
+      if ((!last_order
+           || punit->server.last_order_move_is_safe)
           && maybe_cancel_goto_due_to_enemy(punit, dst_tile)) {
         cancel_orders(punit, "  orders canceled because of enemy");
         notify_player(pplayer, unit_tile(punit), E_UNIT_ORDERS, ftc_server,
@@ -3883,7 +4079,7 @@ bool unit_can_do_action_now(const struct unit *punit)
     char buf[64];
     format_time_duration(game.server.unitwaittime - dt, buf, sizeof(buf));
     notify_player(unit_owner(punit), unit_tile(punit), E_BAD_COMMAND,
-                  ftc_server, _("Your unit may not move for another %s "
+                  ftc_server, _("Your unit may not act for another %s "
                                 "this turn. See /help unitwaittime."), buf);
     return FALSE;
   }

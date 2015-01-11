@@ -187,30 +187,26 @@ void handle_diplomacy_accept_treaty_req(struct player *pplayer,
           }
           break;
 	case CLAUSE_ADVANCE:
-          if (!research_invention_gettable(research_get(pother),
-                   pclause->value, game.info.tech_trade_allow_holes)) {
+          if (!player_invention_reachable(pother, pclause->value, FALSE)) {
 	    /* It is impossible to give a technology to a civilization that
-	     * can not possess it (the client should enforce this). */
+	     * can never possess it (the client should enforce this). */
             log_error("Treaty: %s can't have tech %s",
                       nation_rule_name(nation_of_player(pother)),
-                      advance_rule_name(advance_by_number(pclause->value)));
+                      advance_name_by_player(pplayer, pclause->value));
             notify_player(pplayer, NULL, E_DIPLOMACY, ftc_server,
                           _("The %s can't accept %s."),
                           nation_plural_for_player(pother),
-                          advance_name_translation(advance_by_number
-                                                   (pclause->value)));
+			  advance_name_for_player(pplayer, pclause->value));
 	    return;
           }
-          if (research_invention_state(research_get(pplayer), pclause->value)
-              != TECH_KNOWN) {
+	  if (player_invention_state(pplayer, pclause->value) != TECH_KNOWN) {
             log_error("Nation %s try to give unknown tech %s to nation %s.",
                       nation_rule_name(nation_of_player(pplayer)),
-                      advance_rule_name(advance_by_number(pclause->value)),
+                      advance_name_by_player(pplayer, pclause->value),
                       nation_rule_name(nation_of_player(pother)));
             notify_player(pplayer, NULL, E_DIPLOMACY, ftc_server,
 			  _("You don't have tech %s, you can't accept treaty."),
-                          advance_name_translation(advance_by_number
-                                                   (pclause->value)));
+			  advance_name_for_player(pplayer, pclause->value));
 	    return;
 	  }
 	  break;
@@ -402,6 +398,7 @@ void handle_diplomacy_accept_treaty_req(struct player *pplayer,
       struct player_diplstate *ds_destgiver
         = player_diplstate_get(pdest, pgiver);
       enum diplstate_type old_diplstate = ds_giverdest->type;
+      struct unit_list *pgiver_seen_units, *pdest_seen_units;
 
       switch (pclause->type) {
       case CLAUSE_EMBASSY:
@@ -417,33 +414,26 @@ void handle_diplomacy_accept_treaty_req(struct player *pplayer,
         /* It is possible that two players open the diplomacy dialog
          * and try to give us the same tech at the same time. This
          * should be handled discreetly instead of giving a core dump. */
-        if (research_invention_state(research_get(pdest), pclause->value)
-            == TECH_KNOWN) {
+        if (player_invention_state(pdest, pclause->value) == TECH_KNOWN) {
           log_verbose("Nation %s already know tech %s, "
                       "that %s want to give them.",
                       nation_rule_name(nation_of_player(pdest)),
-                      advance_rule_name(advance_by_number(pclause->value)),
+                      advance_name_by_player(pplayer, pclause->value),
                       nation_rule_name(nation_of_player(pgiver)));
           break;
         }
         notify_player(pdest, NULL, E_TECH_GAIN, ftc_server,
                       _("You are taught the knowledge of %s."),
-                      advance_name_translation(advance_by_number
-                                               (pclause->value)));
+                      advance_name_for_player(pdest, pclause->value));
 
         if (tech_transfer(pdest, pgiver, pclause->value)) {
           notify_embassies(pdest, pgiver, NULL, E_TECH_GAIN, ftc_server,
                            _("The %s have acquired %s from the %s."),
                            nation_plural_for_player(pdest),
-                           advance_name_translation(advance_by_number
-                                                    (pclause->value)),
+                           advance_name_for_player(pdest, pclause->value),
                            nation_plural_for_player(pgiver));
-
-          script_server_signal_emit("tech_researched", 3,
-                                    API_TYPE_TECH_TYPE,
-                                    advance_by_number(pclause->value),
-                                    API_TYPE_PLAYER, pdest,
-                                    API_TYPE_STRING, "traded");
+          script_tech_learned(pdest, advance_by_number(pclause->value),
+                              "traded");
           do_dipl_cost(pdest, pclause->value);
           found_new_tech(pdest, pclause->value, FALSE, TRUE);
         }
@@ -495,10 +485,15 @@ void handle_diplomacy_accept_treaty_req(struct player *pplayer,
                         _("You give the city of %s to %s."),
                         city_link(pcity), player_name(pdest));
 
-          (void) transfer_city(pdest, pcity, -1, TRUE, TRUE, FALSE, TRUE);
+          (void) transfer_city(pdest, pcity, -1, TRUE, TRUE, FALSE,
+                               !is_barbarian(pdest));
 	  break;
 	}
       case CLAUSE_CEASEFIRE:
+        if (old_diplstate == DS_ALLIANCE) {
+          pgiver_seen_units = get_seen_units(pgiver, pdest);
+          pdest_seen_units = get_seen_units(pdest, pgiver);
+        }
         ds_giverdest->type = DS_CEASEFIRE;
         ds_giverdest->turns_left = TURNS_LEFT;
         ds_destgiver->type = DS_CEASEFIRE;
@@ -509,13 +504,21 @@ void handle_diplomacy_accept_treaty_req(struct player *pplayer,
         notify_player(pdest, NULL, E_TREATY_CEASEFIRE, ftc_server,
                       _("You agree on a cease-fire with %s."),
                       player_name(pgiver));
-	if (old_diplstate == DS_ALLIANCE) {
-	  update_players_after_alliance_breakup(pgiver, pdest);
-	}
+        if (old_diplstate == DS_ALLIANCE) {
+          update_players_after_alliance_breakup(pgiver, pdest,
+                                                pgiver_seen_units,
+                                                pdest_seen_units);
+          unit_list_destroy(pgiver_seen_units);
+          unit_list_destroy(pdest_seen_units);
+        }
 
         worker_refresh_required = TRUE;
 	break;
       case CLAUSE_PEACE:
+        if (old_diplstate == DS_ALLIANCE) {
+          pgiver_seen_units = get_seen_units(pgiver, pdest);
+          pdest_seen_units = get_seen_units(pdest, pgiver);
+        }
         ds_giverdest->type = DS_ARMISTICE;
         ds_destgiver->type = DS_ARMISTICE;
         ds_giverdest->turns_left = TURNS_LEFT;
@@ -546,9 +549,13 @@ void handle_diplomacy_accept_treaty_req(struct player *pplayer,
                       nation_plural_for_player(pgiver),
                       TURNS_LEFT,
                       nation_adjective_for_player(pgiver));
-	if (old_diplstate == DS_ALLIANCE) {
-	  update_players_after_alliance_breakup(pgiver, pdest);
-	}
+        if (old_diplstate == DS_ALLIANCE) {
+          update_players_after_alliance_breakup(pgiver, pdest,
+                                                pgiver_seen_units,
+                                                pdest_seen_units);
+          unit_list_destroy(pgiver_seen_units);
+          unit_list_destroy(pdest_seen_units);
+        }
 
         worker_refresh_required = TRUE;
 	break;
@@ -563,6 +570,8 @@ void handle_diplomacy_accept_treaty_req(struct player *pplayer,
         notify_player(pdest, NULL, E_TREATY_ALLIANCE, ftc_server,
                       _("You agree on an alliance with %s."),
                       player_name(pgiver));
+        give_allied_visibility(pgiver, pdest);
+        give_allied_visibility(pdest, pgiver);
 
         worker_refresh_required = TRUE;
 	break;
@@ -618,8 +627,6 @@ void establish_embassy(struct player *pplayer, struct player *aplayer)
   send_player_all_c(pplayer, aplayer->connections);
   /* INFO_EMBASSY level info */
   send_player_all_c(aplayer, pplayer->connections);
-  /* Send research info */
-  send_research_info(research_get(aplayer), pplayer->connections);
 }
 
 /**************************************************************************

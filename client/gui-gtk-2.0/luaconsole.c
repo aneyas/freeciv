@@ -178,7 +178,7 @@ void real_luaconsole_dialog_update(void)
 }
 
 /*****************************************************************************
-  Initilialize a lua console.
+  Initialize a lua console.
 *****************************************************************************/
 static void luaconsole_dialog_create(struct luaconsole_data *pdialog)
 {
@@ -186,7 +186,7 @@ static void luaconsole_dialog_create(struct luaconsole_data *pdialog)
 
   fc_assert_ret(NULL != pdialog);
 
-  if (options.gui_gtk2_message_chat_location == GUI_GTK_MSGCHAT_SPLIT) {
+  if (gui_gtk2_message_chat_location == GUI_GTK_MSGCHAT_SPLIT) {
     notebook = right_notebook;
   } else {
     notebook = bottom_notebook;
@@ -219,6 +219,8 @@ static void luaconsole_dialog_create(struct luaconsole_data *pdialog)
   gtk_text_view_set_left_margin(GTK_TEXT_VIEW(text), 5);
 
   pdialog->message_area = GTK_TEXT_VIEW(text);
+  g_signal_connect(text, "destroy", G_CALLBACK(gtk_widget_destroyed),
+                   &pdialog->message_area);
 
   /* The lua console input line. */
   entry = gtk_entry_new();
@@ -228,6 +230,8 @@ static void luaconsole_dialog_create(struct luaconsole_data *pdialog)
   g_signal_connect(entry, "key_press_event",
                    G_CALLBACK(luaconsole_input_handler), NULL);
   pdialog->entry = entry;
+  g_signal_connect(entry, "destroy", G_CALLBACK(gtk_widget_destroyed),
+                   &pdialog->entry);
 
   /* Load lua script command button. */
   gui_dialog_add_stockbutton(pdialog->shell, GTK_STOCK_OPEN,
@@ -435,6 +439,7 @@ static void luaconsole_dialog_destroy(struct luaconsole_data *pdialog)
     fc_assert(NULL == pdialog->shell);
   }
   fc_assert(NULL == pdialog->message_area);
+  fc_assert(NULL == pdialog->entry);
 }
 
 /*****************************************************************************
@@ -457,7 +462,7 @@ void real_luaconsole_append(const char *astring,
   gtk_text_buffer_insert(buf, &iter, "\n", -1);
   mark = gtk_text_buffer_create_mark(buf, NULL, &iter, TRUE);
 
-  if (options.gui_gtk2_show_chat_message_time) {
+  if (gui_gtk2_show_chat_message_time) {
     char timebuf[64];
     time_t now;
     struct tm *now_tm;

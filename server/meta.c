@@ -230,7 +230,7 @@ static void send_metaserver_post(void *arg)
     addr = srvarg.bind_addr;
   }
 
-  if (!netfile_send_post(srvarg.metaserver_addr, post, NULL, NULL, addr)) {
+  if (!netfile_send_post(srvarg.metaserver_addr, post, NULL, addr)) {
     con_puts(C_METAERROR, _("Error connecting to metaserver"));
     metaserver_failed();
   }
@@ -247,6 +247,7 @@ static bool send_to_metaserver(enum meta_flag flag)
   int humans = 0;
   char host[512];
   char state[20];
+  char rs[256];
   struct netfile_post *post;
 
   switch(server_state()) {
@@ -268,12 +269,15 @@ static bool send_to_metaserver(enum meta_flag flag)
     sz_strlcpy(host, "unknown");
   }
 
+  sz_strlcpy(rs, game.control.name);
+
   /* Freed in metaserver thread function send_metaserver_post() */
   post = netfile_start_post();
 
   netfile_add_form_str(post, "host", host);
   netfile_add_form_int(post, "port", srvarg.port);
   netfile_add_form_str(post, "state", state);
+  netfile_add_form_str(post, "ruleset", rs);
 
   if (flag == META_GOODBYE) {
     netfile_add_form_int(post, "bye", 1);
@@ -315,6 +319,10 @@ static bool send_to_metaserver(enum meta_flag flag)
         netfile_add_form_str(post, "pln[]",
                              plr->nation != NO_NATION_SELECTED 
                              ? nation_plural_for_player(plr)
+                             : "none");
+        netfile_add_form_str(post, "plf[]",
+                             plr->nation != NO_NATION_SELECTED 
+                             ? nation_of_player(plr)->flag_graphic_str
                              : "none");
         netfile_add_form_str(post, "plh[]",
                              pconn ? pconn->addr : "");

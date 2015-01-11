@@ -185,7 +185,7 @@ static void handle_readline_input_callback(char *line)
 
   con_prompt_enter();		/* just got an 'Enter' hit */
   line_internal = local_to_internal_string_malloc(line);
-  (void) handle_stdin_input(NULL, line_internal, FALSE);
+  (void) handle_stdin_input(NULL, line_internal);
   free(line_internal);
   free(line);
 
@@ -690,15 +690,6 @@ enum server_events server_sniff_all_input(void)
 	con_prompt_off();
 	return S_E_END_OF_TURN_TIMEOUT;
       }
-      if ((game.server.autosaves & (1 << AS_TIMER))
-          && S_S_RUNNING == server_state()
-          && (timer_read_seconds(game.server.save_timer)
-              >= game.server.save_frequency * 60)) {
-        save_game_auto("Timer", AS_TIMER);
-        game.server.save_timer = timer_renew(game.server.save_timer,
-                                             TIMER_USER, TIMER_ACTIVE);
-        timer_start(game.server.save_timer);
-      }
 
       if (!no_input) {
 #if defined(__VMS)
@@ -786,7 +777,7 @@ enum server_events server_sniff_all_input(void)
       char *bufptr_internal = local_to_internal_string_malloc(bufptr);
 
       con_prompt_enter();	/* will need a new prompt, regardless */
-      handle_stdin_input(NULL, bufptr_internal, FALSE);
+      handle_stdin_input(NULL, bufptr_internal);
       free(bufptr_internal);
     }
 #else  /* !SOCKET_ZERO_ISNT_STDIN */
@@ -817,12 +808,13 @@ enum server_events server_sniff_all_input(void)
       buffer = malloc(BUF_SIZE + 1);
 
       didget = read(0, buffer, BUF_SIZE);
-      if (didget < 0) {
-        didget = 0; /* Avoid buffer underrun below. */
+      if (didget > 0) {
+        buffer[didget] = '\0';
+      } else {
+        didget = -1; /* error or end-of-file: closing stdin... */
       }
-      *(buffer+didget)='\0';
 #endif /* HAVE_GETLINE */
-      if (didget <= 0) {
+      if (didget < 0) {
         handle_stdin_close();
       }
 
@@ -830,7 +822,7 @@ enum server_events server_sniff_all_input(void)
 
       if (didget >= 0) {
         buf_internal = local_to_internal_string_malloc(buffer);
-        handle_stdin_input(NULL, buf_internal, FALSE);
+        handle_stdin_input(NULL, buf_internal);
         free(buf_internal);
       }
       free(buffer);
@@ -890,16 +882,6 @@ enum server_events server_sniff_all_input(void)
           > game.info.seconds_to_phasedone)) {
     return S_E_END_OF_TURN_TIMEOUT;
   }
-  if ((game.server.autosaves & (1 << AS_TIMER))
-      && S_S_RUNNING == server_state()
-      && (timer_read_seconds(game.server.save_timer)
-          >= game.server.save_frequency * 60)) {
-    save_game_auto("Timer", AS_TIMER);
-    game.server.save_timer = timer_renew(game.server.save_timer,
-                                         TIMER_USER, TIMER_ACTIVE);
-    timer_start(game.server.save_timer);
-  }
-
   return S_E_OTHERWISE;
 }
 
@@ -1088,10 +1070,15 @@ int server_open_socket(void)
   int lan_family;
   struct fc_sockaddr_list *list;
   int name_count;
+  fc_errno eno = 0;
 
 #ifdef IPV6_SUPPORT
   struct ipv6_mreq mreq6;
 #endif
+
+  log_verbose("Server attempting to listen on %s:%d",
+              srvarg.bind_addr ? srvarg.bind_addr : "(any)",
+              srvarg.port);
 
   /* Any supported family will do */
   list = net_lookup_service(srvarg.bind_addr, srvarg.port, FC_ADDR_ANY);
@@ -1101,7 +1088,7 @@ int server_open_socket(void)
   /* Lookup addresses to bind. */
   if (name_count <= 0) {
     log_fatal(_("Server: bad address: <%s:%d>."),
-              srvarg.bind_addr, srvarg.port);
+              srvarg.bind_addr ? srvarg.bind_addr : "(none)", srvarg.port);
     exit(EXIT_FAILURE);
   }
 
@@ -1118,9 +1105,20 @@ int server_open_socket(void)
     if (s == -1) {
       /* Probably EAFNOSUPPORT or EPROTONOSUPPORT.
        * Kernel might have disabled AF_INET6. */
+      eno = fc_get_errno();
       cause = "socket";
       continue;
     }
+
+#ifndef HAVE_WINSOCK
+    /* SO_REUSEADDR considered harmful on Win, necessary otherwise */
+    if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR, 
+                   (char *)&on, sizeof(on)) == -1) {
+      log_error("setsockopt SO_REUSEADDR failed: %s",
+                fc_strerror(fc_get_errno()));
+      sockaddr_debug(paddr);
+    }
+#endif /* HAVE_WINSOCK */
 
     /* AF_INET6 sockets should use IPv6 only,
      * without stealing IPv4 from AF_INET sockets. */
@@ -1138,12 +1136,15 @@ int server_open_socket(void)
 #endif /* IPv6 support */
 
     if (bind(s, &paddr->saddr, sockaddr_size(paddr)) == -1) {
+      eno = fc_get_errno();
       cause = "bind";
 
-      if (fc_get_errno() == EADDRNOTAVAIL) {
+      if (eno == EADDRNOTAVAIL) {
         /* Close only this socket. This address is not available.
          * This can happen with the IPv6 wildcard address if this
          * machine has no IPv6 interfaces. */
+        /* If you change this logic, be sure to make clientside checking
+         * of acceptable port to match. */
         fc_closesocket(s);
         continue;
       } else {
@@ -1160,6 +1161,7 @@ int server_open_socket(void)
     }
 
     if (listen(s, MAX_NUM_CONNECTIONS) == -1) {
+      eno = fc_get_errno();
       cause = "listen";
       fc_closesocket(s);
       continue;
@@ -1169,7 +1171,7 @@ int server_open_socket(void)
   } fc_sockaddr_list_iterate_end;
 
   if (listen_count == 0) {
-    log_fatal("%s failed: %s", cause, fc_strerror(fc_get_errno()));
+    log_fatal("%s failed: %s", cause, fc_strerror(eno));
     fc_sockaddr_list_iterate(list, paddr) {
       sockaddr_debug(paddr);
     } fc_sockaddr_list_iterate_end;

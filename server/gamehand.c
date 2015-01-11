@@ -30,7 +30,6 @@
 
 /* common */
 #include "ai.h"
-#include "calendar.h"
 #include "events.h"
 #include "game.h"
 #include "improvement.h"
@@ -63,36 +62,22 @@
                           list, plink, psp)
 #define startpos_list_iterate_end LIST_BOTH_ITERATE_END
 
-/****************************************************************************
-  Get role_id for given role character
-****************************************************************************/
-enum unit_role_id crole_to_role_id(char crole)
-{
-  switch(crole) {
-  case 'c':
-    return L_CITIES;
-  case 'w':
-    return L_SETTLERS;
-  case 'x':
-    return L_EXPLORER;
-  case 'k':
-    return L_GAMELOSS;
-  case 's':
-    return L_DIPLOMAT;
-  case 'f':
-    return L_FERRYBOAT;
-  case 'd':
-    return L_DEFEND_OK;
-  case 'D':
-    return L_DEFEND_GOOD;
-  case 'a':
-    return L_ATTACK_FAST;
-  case 'A':
-    return L_ATTACK_STRONG;
-  default: 
-    return 0;
-  }
-}
+struct team_placement_config {
+  struct tile **startpos;
+  int flexible_startpos_num;
+  int usable_startpos_num;
+  int total_startpos_num;
+};
+
+struct team_placement_state {
+  int *startpos;
+  long score;
+};
+
+#define SPECPQ_TAG team_placement
+#define SPECPQ_DATA_TYPE struct team_placement_state *
+#define SPECPQ_PRIORITY_TYPE long
+#include "specpq.h"
 
 /****************************************************************************
   Get unit_type for given role character
@@ -100,9 +85,40 @@ enum unit_role_id crole_to_role_id(char crole)
 struct unit_type *crole_to_unit_type(char crole,struct player *pplayer)
 {
   struct unit_type *utype = NULL;
-  enum unit_role_id role = crole_to_role_id(crole);
+  enum unit_role_id role;
 
-  if (role == 0) {
+  switch(crole) {
+  case 'c':
+    role = L_CITIES;
+    break;
+  case 'w':
+    role = L_SETTLERS;
+    break;
+  case 'x':
+    role = L_EXPLORER;
+    break;
+  case 'k':
+    role = L_GAMELOSS;
+    break;
+  case 's':
+    role = L_DIPLOMAT;
+    break;
+  case 'f':
+    role = L_FERRYBOAT;
+    break;
+  case 'd':
+    role = L_DEFEND_OK;
+    break;
+  case 'D':
+    role = L_DEFEND_GOOD;
+    break;
+  case 'a':
+    role = L_ATTACK_FAST;
+    break;
+  case 'A':
+    role = L_ATTACK_STRONG;
+    break;
+  default: 
     fc_assert_ret_val(FALSE, NULL);
     return NULL;
   }
@@ -130,7 +146,6 @@ static struct tile *place_starting_unit(struct tile *starttile,
 {
   struct tile *ptile = NULL;
   struct unit_type *utype = crole_to_unit_type(crole, pplayer);
-  bool hut_present = FALSE;
 
   if (utype != NULL) {
     iterate_outward(starttile, map.xsize + map.ysize, itertile) {
@@ -153,14 +168,8 @@ static struct tile *place_starting_unit(struct tile *starttile,
    * other cases, huts are avoided as start positions).  Remove any such hut,
    * and make sure to tell the client, since we may have already sent this
    * tile (with the hut) earlier: */
-  extra_type_by_cause_iterate(EC_HUT, pextra) {
-    if (tile_has_extra(ptile, pextra)) {
-      tile_remove_extra(ptile, pextra);
-      hut_present = TRUE;
-    }
-  } extra_type_by_cause_iterate_end;
-
-  if (hut_present) {
+  if (tile_has_special(ptile, S_HUT)) {
+    tile_clear_special(ptile, S_HUT);
     update_tile_knowledge(ptile);
     log_verbose("Removed hut on start position for %s",
                 player_name(pplayer));
@@ -170,6 +179,19 @@ static struct tile *place_starting_unit(struct tile *starttile,
   map_show_circle(pplayer, ptile, game.server.init_vis_radius_sq);
 
   if (utype != NULL) {
+    /* We cannot currently handle sea units as start units.
+     * TODO: remove this code block when we can. */
+    if (utype_move_type(utype) == UMT_SEA) {
+      log_error("Sea moving start units are not yet supported, "
+                "%s not created.",
+                utype_rule_name(utype));
+      notify_player(pplayer, NULL, E_BAD_COMMAND, ftc_server,
+                    _("Sea moving start units are not yet supported. "
+                      "Nobody gets %s."),
+                    utype_name_translation(utype));
+      return NULL;
+    }
+
     (void) create_unit(pplayer, ptile, utype, FALSE, 0, 0);
     return ptile;
   }
@@ -196,6 +218,200 @@ static struct tile *find_dispersed_position(struct player *pplayer,
              && !is_non_allied_unit_tile(ptile, pplayer)));
 
   return ptile;
+}
+
+/* Calculate the distance between tiles, according to the 'teamplacement'
+ * setting set to 'CLOSEST'. */
+#define team_placement_closest sq_map_distance
+
+/****************************************************************************
+  Calculate the distance between tiles, according to the 'teamplacement'
+  setting set to 'CONTINENT'.
+****************************************************************************/
+static int team_placement_continent(const struct tile *ptile1,
+                                    const struct tile *ptile2)
+{
+  return (ptile1->continent == ptile2->continent
+          ? sq_map_distance(ptile1, ptile2)
+          : sq_map_distance(ptile1, ptile2) + MAP_INDEX_SIZE);
+}
+
+/****************************************************************************
+  Calculate the distance between tiles, according to the 'teamplacement'
+  setting set to 'HORIZONTAL'.
+****************************************************************************/
+static int team_placement_horizontal(const struct tile *ptile1,
+                                     const struct tile *ptile2)
+{
+  int dx, dy;
+
+  map_distance_vector(&dx, &dy, ptile1, ptile2);
+  /* Map vector to natural vector (Y axis). */
+  return abs(MAP_IS_ISOMETRIC ? dx + dy : dy);
+}
+
+/****************************************************************************
+  Calculate the distance between tiles, according to the 'teamplacement'
+  setting set to 'VERTICAL'.
+****************************************************************************/
+static int team_placement_vertical(const struct tile *ptile1,
+                                   const struct tile *ptile2)
+{
+  int dx, dy;
+
+  map_distance_vector(&dx, &dy, ptile1, ptile2);
+  /* Map vector to natural vector (X axis). */
+  return abs(MAP_IS_ISOMETRIC ? dx - dy : dy);
+}
+
+/****************************************************************************
+  Destroys a team_placement_state structure.
+****************************************************************************/
+static void team_placement_state_destroy(struct team_placement_state *pstate)
+{
+  free(pstate->startpos);
+  free(pstate);
+}
+
+/****************************************************************************
+  Find the best team placement, according to the 'team_placement' setting.
+****************************************************************************/
+static void do_team_placement(const struct team_placement_config *pconfig,
+                              struct team_placement_state *pbest_state,
+                              int iter_max)
+{
+  const size_t state_array_size = (sizeof(*pbest_state->startpos)
+                                   * pconfig->total_startpos_num);
+  struct team_placement_pq *pqueue =
+      team_placement_pq_new(pconfig->total_startpos_num * 4);
+  int (*distance)(const struct tile *, const struct tile *) = NULL;
+  struct team_placement_state *pstate, *pnew;
+  const struct tile *ptile1, *ptile2;
+  long base_delta, delta;
+  bool base_delta_calculated;
+  int iter = 0;
+  bool repeat;
+  int i, j, k, t1, t2;
+
+  switch (map.server.team_placement) {
+  case TEAM_PLACEMENT_CLOSEST:
+    distance = team_placement_closest;
+    break;
+  case TEAM_PLACEMENT_CONTINENT:
+    distance = team_placement_continent;
+    break;
+  case TEAM_PLACEMENT_HORIZONTAL:
+    distance = team_placement_horizontal;
+    break;
+  case TEAM_PLACEMENT_VERTICAL:
+    distance = team_placement_vertical;
+    break;
+  case TEAM_PLACEMENT_DISABLED:
+    break;
+  }
+  fc_assert_ret_msg(distance != NULL, "Wrong team_placement variant (%d)",
+                    map.server.team_placement);
+
+  /* Initialize starting state. */
+  pstate = fc_malloc(sizeof(*pstate));
+  pstate->startpos = fc_malloc(state_array_size);
+  memcpy(pstate->startpos, pbest_state->startpos, state_array_size);
+  pstate->score = pbest_state->score;
+
+  do {
+    repeat = FALSE;
+    for (i = 0; i < pconfig->usable_startpos_num; i++) {
+      t1 = pstate->startpos[i];
+      if (t1 == -1) {
+        continue; /* Not used. */
+      }
+      ptile1 = pconfig->startpos[i];
+      base_delta_calculated = FALSE;
+      for (j = i + 1; j < (i >= pconfig->flexible_startpos_num
+                           ? pconfig->usable_startpos_num
+                           : pconfig->flexible_startpos_num); j++) {
+        t2 = pstate->startpos[j];
+        if (t2 == -1) {
+          /* Not assigned yet. */
+          ptile2 = pconfig->startpos[j];
+          if (base_delta_calculated) {
+            delta = base_delta;
+            for (k = 0; k < pconfig->total_startpos_num; k++) {
+              if (k != i && t1 == pstate->startpos[k]) {
+                delta += distance(ptile2, pconfig->startpos[k]);
+              }
+            }
+          } else {
+            delta = 0;
+            base_delta = 0;
+            for (k = 0; k < pconfig->total_startpos_num; k++) {
+              if (k != i && t1 == pstate->startpos[k]) {
+                base_delta -= distance(ptile1, pconfig->startpos[k]);
+                delta += distance(ptile2, pconfig->startpos[k]);
+              }
+            }
+            delta += base_delta;
+            base_delta_calculated = TRUE;
+          }
+        } else if (t1 < t2) {
+          ptile2 = pconfig->startpos[j];
+          if (base_delta_calculated) {
+            delta = base_delta;
+            for (k = 0; k < pconfig->total_startpos_num; k++) {
+              if (k != i && t1 == pstate->startpos[k]) {
+                delta += distance(ptile2, pconfig->startpos[k]);
+              } else if (k != j && t2 == pstate->startpos[k]) {
+                delta -= distance(ptile2, pconfig->startpos[k]);
+                delta += distance(ptile1, pconfig->startpos[k]);
+              }
+            }
+          } else {
+            delta = 0;
+            base_delta = 0;
+            for (k = 0; k < pconfig->total_startpos_num; k++) {
+              if (k != i && t1 == pstate->startpos[k]) {
+                base_delta -= distance(ptile1, pconfig->startpos[k]);
+                delta += distance(ptile2, pconfig->startpos[k]);
+              } else if (k != j && t2 == pstate->startpos[k]) {
+                delta -= distance(ptile2, pconfig->startpos[k]);
+                delta += distance(ptile1, pconfig->startpos[k]);
+              }
+            }
+            delta += base_delta;
+            base_delta_calculated = TRUE;
+          }
+        } else {
+          continue;
+        }
+
+        if (delta <= 0) {
+          repeat = TRUE;
+          pnew = fc_malloc(sizeof(*pnew));
+          pnew->startpos = fc_malloc(state_array_size);
+          memcpy(pnew->startpos, pstate->startpos, state_array_size);
+          pnew->startpos[i] = t2;
+          pnew->startpos[j] = t1;
+          pnew->score = pstate->score + delta;
+          team_placement_pq_insert(pqueue, pnew, -pnew->score);
+
+          if (pnew->score < pbest_state->score) {
+            memcpy(pbest_state->startpos, pnew->startpos, state_array_size);
+            pbest_state->score = pnew->score;
+          }
+        }
+      }
+    }
+
+    team_placement_state_destroy(pstate);
+    if (iter++ >= iter_max) {
+      log_normal(_("Didn't find optimal solution for team placement "
+                   "in %d iterations."), iter);
+      break;
+    }
+
+  } while (repeat && team_placement_pq_remove(pqueue, &pstate));
+
+  team_placement_pq_destroy_full(pqueue, team_placement_state_destroy);
 }
 
 /****************************************************************************
@@ -327,6 +543,156 @@ void init_new_game(void)
         }
       }
     } while (0 < players_to_place && 0 < startpos_list_size(targeted_list));
+  }
+
+  /* Now try to assign with regard to the 'teamplacement' setting. */
+  if (players_to_place > 0
+      && map.server.team_placement != TEAM_PLACEMENT_DISABLED
+      && player_count() > team_count()) {
+    const struct player_list *members;
+    int team_placement_players_to_place = 0;
+    int real_team_count = 0;
+
+    teams_iterate(pteam) {
+      members = team_members(pteam);
+      fc_assert(0 < player_list_size(members));
+      real_team_count++;
+      if (player_list_size(members) == 1) {
+        /* Single player teams, doesn't count for team placement. */
+        continue;
+      }
+      player_list_iterate(members, pplayer) {
+        if (player_startpos[player_index(pplayer)] == NULL) {
+          team_placement_players_to_place++;
+        }
+      } player_list_iterate_end;
+    } teams_iterate_end;
+
+    if (real_team_count > 1 && team_placement_players_to_place > 0) {
+      /* We really can do something to improve team placement. */
+      struct team_placement_config config;
+      struct team_placement_state state;
+      int i, j, t;
+
+      log_verbose("Do team placement for %d players, using %s variant.",
+                  team_placement_players_to_place,
+                  team_placement_name(map.server.team_placement));
+
+      /* Initialize configuration. */
+      config.flexible_startpos_num = startpos_list_size(flexible_list);
+      config.usable_startpos_num = config.flexible_startpos_num;
+      if (config.flexible_startpos_num < team_placement_players_to_place) {
+        config.usable_startpos_num += startpos_list_size(impossible_list);
+      }
+      config.total_startpos_num = (config.usable_startpos_num
+                                   + player_count() - players_to_place);
+      config.startpos = fc_malloc(sizeof(*config.startpos)
+                                  * config.total_startpos_num);
+      i = 0;
+      startpos_list_iterate(flexible_list, plink, psp) {
+        config.startpos[i++] = startpos_tile(psp);
+      } startpos_list_iterate_end;
+      fc_assert(i == config.flexible_startpos_num);
+      if (i < config.usable_startpos_num) {
+        startpos_list_iterate(impossible_list, plink, psp) {
+          config.startpos[i++] = startpos_tile(psp);
+        } startpos_list_iterate_end;
+      }
+      fc_assert(i == config.usable_startpos_num);
+      while (i < config.total_startpos_num) {
+        config.startpos[i++] = NULL;
+      }
+      fc_assert(i == config.total_startpos_num);
+
+      /* Initialize state. */
+      state.startpos = fc_malloc(sizeof(*state.startpos)
+                                 * config.total_startpos_num);
+      state.score = 0;
+      i = 0;
+      j = config.usable_startpos_num;
+      teams_iterate(pteam) {
+        members = team_members(pteam);
+        if (player_list_size(members) <= 1) {
+          /* Single player teams, doesn't count for team placement. */
+          continue;
+        }
+        t = team_number(pteam);
+        player_list_iterate(members, pplayer) {
+          struct tile *ptile = player_startpos[player_index(pplayer)];
+
+          if (ptile == NULL) {
+            state.startpos[i++] = t;
+          } else {
+            state.startpos[j] = t;
+            config.startpos[j] = ptile;
+            j++;
+          }
+        } player_list_iterate_end;
+      } teams_iterate_end;
+      while (i < config.usable_startpos_num) {
+        state.startpos[i++] = -1;
+      }
+      fc_assert(i == config.usable_startpos_num);
+      while (j < config.total_startpos_num) {
+        state.startpos[j++] = -1;
+      }
+      fc_assert(j == config.total_startpos_num);
+
+      /* Look for best team placement. */
+      do_team_placement(&config, &state, team_placement_players_to_place);
+
+      /* Apply result. */
+      for (i = 0; i < config.usable_startpos_num; i++) {
+        t = state.startpos[i];
+        if (t != -1) {
+          const struct team *pteam = team_by_number(t);
+          int candidate_index = -1;
+          int candidate_num = 0;
+
+          log_verbose("Start position (%d, %d) assigned to team %d (%s)",
+                      TILE_XY(config.startpos[i]),
+                      t, team_rule_name(pteam));
+
+          player_list_iterate(team_members(pteam), member) {
+            if (player_startpos[player_index(member)] == NULL
+                && fc_rand(++candidate_num) == 0) {
+              candidate_index = player_index(member);
+            }
+          } player_list_iterate_end;
+          fc_assert(candidate_index >= 0);
+          player_startpos[candidate_index] = config.startpos[i];
+          team_placement_players_to_place--;
+          players_to_place--;
+        }
+      }
+      fc_assert(team_placement_players_to_place == 0);
+
+      /* Free data. */
+      if (players_to_place > 0) {
+        /* We need to remove used startpos from the lists. */
+        i = 0;
+        startpos_list_iterate(flexible_list, plink, psp) {
+          fc_assert(config.startpos[i] == startpos_tile(psp));
+          if (state.startpos[i] != -1) {
+            startpos_list_erase(flexible_list, plink);
+          }
+          i++;
+        } startpos_list_iterate_end;
+        fc_assert(i == config.flexible_startpos_num);
+        if (i < config.usable_startpos_num) {
+          startpos_list_iterate(impossible_list, plink, psp) {
+            fc_assert(config.startpos[i] == startpos_tile(psp));
+            if (state.startpos[i] != -1) {
+              startpos_list_erase(impossible_list, plink);
+            }
+            i++;
+          } startpos_list_iterate_end;
+        }
+        fc_assert(i == config.usable_startpos_num);
+      }
+
+      free(config.startpos);
+    }
   }
 
   /* Now assign unrestricted start positions to any remaining players. */

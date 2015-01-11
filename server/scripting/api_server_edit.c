@@ -254,12 +254,14 @@ void api_edit_change_gold(lua_State *L, Player *pplayer, int amount)
 Tech_Type *api_edit_give_technology(lua_State *L, Player *pplayer,
                                     Tech_Type *ptech, const char *reason)
 {
+  struct player_research *presearch;
   Tech_type_id id;
   Tech_Type *result;
 
   LUASCRIPT_CHECK_STATE(L, NULL);
   LUASCRIPT_CHECK_ARG_NIL(L, pplayer, 2, Player, NULL);
 
+  presearch = player_research_get(pplayer);
   if (ptech) {
     id = advance_number(ptech);
   } else {
@@ -267,23 +269,19 @@ Tech_Type *api_edit_give_technology(lua_State *L, Player *pplayer,
      * to pass correct reason to emitted signal. */
     if (game.info.free_tech_method == FTM_CHEAPEST) {
       id = pick_cheapest_tech(pplayer);
-    } else if (research_get(pplayer)->researching == A_UNSET
+    } else if (presearch->researching == A_UNSET
                || game.info.free_tech_method == FTM_RANDOM) {
       id = pick_random_tech(pplayer);
     } else {
-      id = research_get(pplayer)->researching;
+      id = presearch->researching;
     }
   }
 
-  if (is_future_tech(id)
-      || research_invention_state(research_get(pplayer), id) != TECH_KNOWN) {
+  if (player_invention_state(pplayer, id) != TECH_KNOWN) {
     do_free_cost(pplayer, id);
     found_new_tech(pplayer, id, FALSE, TRUE);
     result = advance_by_number(id);
-    script_server_signal_emit("tech_researched", 3,
-                              API_TYPE_TECH_TYPE, result,
-                              API_TYPE_PLAYER, pplayer,
-                              API_TYPE_STRING, reason);
+    script_tech_learned(pplayer, result, reason);
     return result;
   } else {
     return NULL;
@@ -305,28 +303,6 @@ bool api_edit_trait_mod(lua_State *L, Player *pplayer, const char *trait_name,
   pplayer->ai_common.traits[tr].mod += mod;
 
   return TRUE;
-}
-
-/*****************************************************************************
-  Create a new extra.
-*****************************************************************************/
-void api_edit_create_extra(lua_State *L, Tile *ptile, const char *name)
-{
-  struct extra_type *pextra;
-
-  LUASCRIPT_CHECK_STATE(L);
-  LUASCRIPT_CHECK_ARG_NIL(L, ptile, 2, Tile);
-
-  if (!name) {
-    return;
-  }
-
-  pextra = extra_type_by_rule_name(name);
-
-  if (pextra) {
-    tile_add_extra(ptile, pextra);
-    update_tile_knowledge(ptile);
-  }
 }
 
 /*****************************************************************************
@@ -369,7 +345,7 @@ void api_edit_create_road(lua_State *L, Tile *ptile, const char *name)
   proad = road_type_by_rule_name(name);
 
   if (proad) {
-    create_road(ptile, proad);
+    tile_add_road(ptile, proad);
     update_tile_knowledge(ptile);
   }
 }
@@ -384,6 +360,9 @@ void api_edit_tile_set_label(lua_State *L, Tile *ptile, const char *label)
   LUASCRIPT_CHECK_ARG_NIL(L, label, 3, string);
 
   tile_set_label(ptile, label);
+  if (server_state() >= S_S_RUNNING) {
+    send_tile_info(NULL, ptile, FALSE);
+  }
 }
 
 /*****************************************************************************

@@ -5,14 +5,8 @@ dnl Test for Qt and needed libraries for gui-qt
 
 AC_DEFUN([FC_QT_CLIENT],
 [
-
-dnl FIXME: In its current state Qt-client is never selected automatically.
-dnl        When Qt-client matures to usable state enable auto-selection by
-dnl        replacing below if-check with one that is currently commented out.
-dnl if test "x$gui_qt" = "xyes" || test "x$client" = "xall" ||
-dnl   test "x$client" = "xauto" ; then
-
-if test "x$gui_qt" = "xyes" || test "x$client" = "xall" ; then
+if test "x$gui_qt" = "xyes" || test "x$client" = "xall" ||
+   test "x$client" = "xauto" ; then
 
   if test "x$cxx_works" = "xyes" ; then
 
@@ -23,11 +17,11 @@ if test "x$gui_qt" = "xyes" || test "x$client" = "xall" ; then
       gui_qt_cxxflags=$FC_QT5_CXXFLAGS
       gui_qt_libs=$FC_QT5_LIBS
     else
-      AC_MSG_RESULT([not found])
+      qt_fail_reason="Missing Qt5 development files"
     fi
 
   else
-    AC_MSG_RESULT([not found])
+     qt_fail_reason="C++ compiler does not work"
   fi
 
   if test "x$fc_qt5_usable" = "xtrue" ; then
@@ -36,7 +30,7 @@ if test "x$gui_qt" = "xyes" || test "x$client" = "xall" ; then
       client=yes
     fi
   elif test "x$gui_qt" = "xyes" ; then
-    AC_MSG_ERROR([selected client 'qt' cannot be built])
+    AC_MSG_ERROR([selected client 'qt' cannot be built: $qt_fail_reason])
   fi
 fi
 ])

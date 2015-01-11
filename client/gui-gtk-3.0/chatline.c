@@ -81,6 +81,14 @@ void inputline_grab_focus(void)
 }
 
 /**************************************************************************
+  Returns TRUE iff the input line is currently visible.
+**************************************************************************/
+bool inputline_is_visible(void)
+{
+  return gtk_widget_get_mapped(toolkit.entry);
+}
+
+/**************************************************************************
   Helper function to determine if a given client input line is intended as
   a "plain" public message. Note that messages prefixed with : are a
   special case (explicit public messages), and will return FALSE.
@@ -140,7 +148,7 @@ static void inputline_return(GtkEntry *w, gpointer data)
   theinput = gtk_entry_get_text(w);
   
   if (*theinput) {
-    if (client_state() == C_S_RUNNING && options.gui_gtk3_allied_chat_only
+    if (client_state() == C_S_RUNNING && gui_gtk3_allied_chat_only
         && is_plain_public_message(theinput)) {
       char buf[MAX_LEN_MSG];
       fc_snprintf(buf, sizeof(buf), ". %s", theinput);
@@ -393,7 +401,7 @@ static gboolean inputline_handler(GtkWidget *w, GdkEventKey *ev)
       return TRUE;
 
     case GDK_KEY_Tab:
-      if (options.gui_gtk3_chatline_autocompletion) {
+      if (gui_gtk3_chatline_autocompletion) {
         return chatline_autocomplete(GTK_EDITABLE(w));
       }
 
@@ -882,7 +890,7 @@ void real_output_window_append(const char *astring,
   gtk_text_buffer_insert(buf, &iter, "\n", -1);
   mark = gtk_text_buffer_create_mark(buf, NULL, &iter, TRUE);
 
-  if (options.gui_gtk3_show_chat_message_time) {
+  if (gui_gtk3_show_chat_message_time) {
     char timebuf[64];
     time_t now;
     struct tm *now_tm;
@@ -1444,9 +1452,11 @@ void chatline_init(void)
 **************************************************************************/
 static gboolean version_message_main_thread(gpointer user_data)
 {
-  const char *vertext = (const char *)user_data;
+  char *vertext = (char *)user_data;
 
   output_window_append(ftc_client, vertext);
+
+  FC_FREE(vertext);
 
   return G_SOURCE_REMOVE;
 }
@@ -1456,5 +1466,10 @@ static gboolean version_message_main_thread(gpointer user_data)
 **************************************************************************/
 void version_message(char *vertext)
 {
-  gdk_threads_add_idle(version_message_main_thread, vertext);
+  int len = strlen(vertext) + 1;
+  char *persistent = fc_malloc(len);
+
+  strncpy(persistent, vertext, len);
+
+  gdk_threads_add_idle(version_message_main_thread, persistent);
 }

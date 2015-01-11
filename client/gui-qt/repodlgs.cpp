@@ -87,7 +87,7 @@ void research_diagram::mousePressEvent(QMouseEvent *event)
   Tech_type_id tech = get_tech_on_reqtree(req, event->x(), event->y());
 
   if (event->button() == Qt::LeftButton && can_client_issue_orders()) {
-    switch (research_invention_state(research_get(client_player()), tech)) {
+    switch (player_invention_state(client_player(), tech)) {
     case TECH_PREREQS_KNOWN:
       dsend_packet_player_research(&client.conn, tech);
       break;
@@ -183,7 +183,6 @@ science_report::science_report(): QWidget()
 science_report::~science_report()
 {
   gui()->remove_repo_dlg("SCI");
-  gui()->remove_place(index);
 }
 
 /****************************************************************************
@@ -193,14 +192,13 @@ science_report::~science_report()
 ****************************************************************************/
 void science_report::init(bool raise)
 {
-  index = gui()->gimme_place();
-  gui()->add_game_tab(this, _("Research"), index);
+  gui()->gimme_place(this, "SCI");
+  index = gui()->add_game_tab(this, _("Research"));
   if (raise == false) {
     gui()->game_tab_widget->change_color(index, Qt::red);
   } else {
     gui()->game_tab_widget->setCurrentIndex(index);
   }
-  gui()->add_repo_dlg("SCI");
   update_report();
 }
 
@@ -218,7 +216,7 @@ void science_report::redraw()
 void science_report::update_report()
 {
 
-  struct research *research = research_get(client_player());
+  struct player_research *research = player_research_get(client_player());
   const char *text;
   int total;
   int done = research->bulbs_researched;
@@ -238,7 +236,7 @@ void science_report::update_report()
   }
 
   if (research->researching != A_UNSET) {
-    total = research->researching_cost;
+    total = research->client.researching_cost;
   } else  {
     total = -1;
   }
@@ -276,7 +274,7 @@ void science_report::update_report()
 
   /** Collect all techs which are reachable in next 10 steps. */
   advance_index_iterate(A_FIRST, i) {
-    if (research_invention_reachable(research, i)
+    if (player_invention_reachable(client_player(), i, true)
         && TECH_KNOWN != research->inventions[i].state
         && (i == research->tech_goal
             || 10 >= research->inventions[i].num_required_techs)) {
@@ -309,9 +307,9 @@ void science_report::update_report()
 
   /** set current tech and goal */
   qres = research->researching;
-
-  if (qres == A_UNSET) {
-    researching_combo->insertItem(0, _("None"), A_UNSET);
+  if (qres == A_UNSET || is_future_tech(research->researching)) {
+    researching_combo->insertItem(0, advance_name_researching(
+                                  client.conn.playing), A_UNSET);
     researching_combo->setCurrentIndex(0);
   } else {
     for (int i = 0; i < researching_combo->count(); i++) {
@@ -341,6 +339,13 @@ void science_report::update_report()
   researching_combo->blockSignals(false);
   goal_combo->blockSignals(false);
 
+  if (client_is_observer()) {
+    researching_combo->setDisabled(true);
+    goal_combo->setDisabled(true);
+  } else {
+    researching_combo->setDisabled(false);
+    goal_combo->setDisabled(false);
+  }
   update_reqtree();
 }
 
@@ -405,10 +410,18 @@ void real_science_report_dialog_update(void)
 **************************************************************************/
 units_report::units_report(): QWidget()
 {
+  QLabel *empty1, *empty2;
+  int len;
+
   QGridLayout *units_layout= new QGridLayout;
   units_widget = new QTableWidget;
-  find_button = new QPushButton;
-  upgrade_button = new QPushButton;
+  find_button = new QPushButton(style()->standardIcon(
+                          QStyle::SP_ToolBarHorizontalExtensionButton),
+                          _("Find Nearest"));
+  upgrade_button = new QPushButton(style()->standardIcon(
+                          QStyle::SP_FileDialogToParent),_("Upgrade"));
+  empty1 = new QLabel;
+  empty2 = new QLabel;
   QStringList slist;
   slist << _("Unit Type") << Q_("?Upgradable unit [short]:U") << _("In-Prog") 
         << _("Active") << _("Shield") << _("Food") << _("Gold");
@@ -421,13 +434,18 @@ units_report::units_report(): QWidget()
                                                    ResizeToContents);
   units_widget->verticalHeader()->setVisible(false);
   units_widget->setSelectionMode(QAbstractItemView::SingleSelection);
-  find_button->setText(_("Find _Nearest"));
+  units_widget->setAlternatingRowColors(true);
   find_button->setEnabled(false);
   upgrade_button->setText(_("Upgrade"));
   upgrade_button->setEnabled(false);
-  units_layout->addWidget(units_widget, 1, 0, 5, 5);
-  units_layout->addWidget(find_button, 0, 0, 1, 1);
-  units_layout->addWidget(upgrade_button, 0, 1, 1, 1);
+  units_layout->addWidget(empty1, 0, 0, 1, 1);
+  units_layout->addWidget(units_widget, 0, 1, 1, 2);
+  units_layout->addWidget(find_button, 1, 2, 1, 1, Qt::AlignRight);
+  units_layout->addWidget(upgrade_button, 1, 1, 1, 1);
+  units_layout->addWidget(empty2, 0, 3, 1, 1);
+  units_layout->setColumnStretch(0, 1);
+  units_layout->setColumnStretch(1, 10);
+  units_layout->setColumnStretch(3, 1);
 
   connect(find_button, SIGNAL(pressed()), SLOT(find_units()));
   connect(upgrade_button, SIGNAL(pressed()), SLOT(upgrade_units()));
@@ -437,6 +455,10 @@ units_report::units_report(): QWidget()
           SLOT(selection_changed(const QItemSelection &,
                                  const QItemSelection &)));
   setLayout(units_layout);
+  len = units_widget->horizontalHeader()->length() + 4;
+  units_widget->setFixedWidth(len);
+  find_button->setFixedWidth(len / 3);
+  upgrade_button->setFixedWidth(len / 3);
 }
 
 
@@ -446,7 +468,6 @@ units_report::units_report(): QWidget()
 units_report::~units_report()
 {
   gui()->remove_repo_dlg("UNI");
-  gui()->remove_place(index);
 }
 
 /****************************************************************************
@@ -456,10 +477,9 @@ units_report::~units_report()
 void units_report::init()
 {
   curr_row = -1;
-  index = gui()->gimme_place();
-  gui()->add_game_tab(this, _("Units"), index);
+  gui()->gimme_place(this, "UNI");
+  index = gui()->add_game_tab(this, _("Units"));
   gui()->game_tab_widget->setCurrentIndex(index);
-  gui()->add_repo_dlg("UNI");
 }
 
 /**************************************************************************
@@ -479,7 +499,17 @@ void units_report::update_report()
   struct urd_info unit_array[utype_count()];
   struct urd_info unit_totals;
   struct urd_info *info;
+  int total_upgradable_count = 0;
+  bool upgradable;
   QVariant qvar;
+  QPixmap *pix;
+  QPixmap pix_scaled;
+  struct sprite *sprite;
+  QFont f = QApplication::font();
+  int h;
+  int len;
+  QFontMetrics fm(f);
+  h = fm.height() + 6;
 
   units_widget->setRowCount(0);
   units_widget->clearContents();
@@ -517,20 +547,30 @@ void units_report::update_report()
   unit_type_iterate(utype) {
     utype_id = utype_index(utype);
     info = unit_array + utype_id;
-
+    upgradable = client_has_player()
+                 && NULL != can_upgrade_unittype(client_player(), utype);
     if (0 == info->active_count && 0 == info->building_count) {
       continue;                 /* We don't need a row for this type. */
     }
     units_widget->setRowCount(row + 1);
     for (column = 0; column < 7; column++) {
       unit_item = new QTableWidgetItem;
-      unit_item->setTextAlignment(Qt::AlignHCenter);
+      unit_item->setTextAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
       switch (column) {
       case 0:
-        unit_item->setTextAlignment(Qt::AlignLeft);
+        unit_item->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
         unit_item->setText(utype_name_translation(utype));
         qvar = utype_id;
         unit_item->setData(Qt::UserRole, qvar);
+        sprite = get_unittype_sprite(tileset, utype, direction8_invalid(),
+                                     true);
+        if (sprite != NULL) {
+          pix = sprite->pm;
+          pix_scaled = pix->scaledToHeight(h);
+        } else {
+          pix_scaled.fill();
+        }
+        unit_item->setData(Qt::DecorationRole, pix_scaled);
         break;
       case 1:
         if ((client_has_player()
@@ -539,6 +579,7 @@ void units_report::update_report()
         } else {
           unit_item->setCheckState(Qt::Unchecked);
         }
+        unit_item->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
         break;
       case 2:
         unit_item->setText(QString::number(info->building_count));
@@ -564,21 +605,23 @@ void units_report::update_report()
       unit_totals.upkeep[output] += info->upkeep[output];
     }
     unit_totals.building_count += info->building_count;
-
+    if (upgradable) {
+      total_upgradable_count += info->active_count;
+    }
     row++;
   } unit_type_iterate_end;
   row++;
   units_widget->setRowCount(row);
   for (column = 0; column < 7; column++) {
     unit_item = new QTableWidgetItem;
-    unit_item->setTextAlignment(Qt::AlignHCenter);
+    unit_item->setTextAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
     switch (column) {
     case 0:
-      unit_item->setTextAlignment(Qt::AlignLeft);
+      unit_item->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
       unit_item->setText(_("Totals:"));
       break;
     case 1:
-      unit_item->setCheckState(Qt::Unchecked);
+      unit_item->setText(QString::number(total_upgradable_count));
       break;
     case 2:
       unit_item->setText(QString::number(unit_totals.building_count));
@@ -598,7 +641,11 @@ void units_report::update_report()
     }
     units_widget->setItem(row - 1, column, unit_item);
   }
-  units_widget->resizeRowsToContents();
+  units_widget->resizeColumnsToContents();
+  len = units_widget->horizontalHeader()->length() + 4;
+  units_widget->setFixedWidth(len);
+  find_button->setFixedWidth(len / 3);
+  upgrade_button->setFixedWidth(len / 3);
   max_row = row - 1;
 }
 
@@ -665,7 +712,7 @@ void units_report::upgrade_units()
   struct unit_type *upgrade;
   utype = utype_by_number(uid);
   int price;
-  QMessageBox ask;
+  QMessageBox ask(this);
   QString s1, s2;
   int ret;
   char buf[1024];
@@ -740,6 +787,7 @@ void units_report::selection_changed(const QItemSelection& sl,
 **************************************************************************/
 eco_report::eco_report(): QWidget()
 {
+  QHeaderView *header;
   QGridLayout *eco_layout = new QGridLayout;
   eco_widget = new QTableWidget;
   disband_button = new QPushButton;
@@ -758,6 +806,10 @@ eco_report::eco_report(): QWidget()
   eco_widget->horizontalHeader()->resizeSections(QHeaderView::Stretch);
   eco_widget->verticalHeader()->setVisible(false);
   eco_widget->setSelectionMode(QAbstractItemView::SingleSelection);
+  eco_widget->setSortingEnabled(true);
+  header = eco_widget->horizontalHeader();
+  header->setSectionResizeMode(1, QHeaderView::Stretch);
+  header->setStretchLastSection(true);
   disband_button->setText(_("_Disband"));
   disband_button->setEnabled(false);
   sell_button->setText(_("Sell _All"));
@@ -787,7 +839,6 @@ eco_report::eco_report(): QWidget()
 eco_report::~eco_report()
 {
   gui()->remove_repo_dlg("ECO");
-  gui()->remove_place(index);
 }
 
 /**************************************************************************
@@ -796,10 +847,9 @@ eco_report::~eco_report()
 void eco_report::init()
 {
   curr_row = -1;
-  index = gui()->gimme_place();
-  gui()->add_game_tab(this, _("Economy"), index);
+  gui()->gimme_place(this, "ECO");
+  index = gui()->add_game_tab(this, _("Economy"));
   gui()->game_tab_widget->setCurrentIndex(index);
-  gui()->add_repo_dlg("ECO");
 }
 
 /**************************************************************************
@@ -816,7 +866,10 @@ void eco_report::update_report()
   int h;
   QFontMetrics fm(f);
   h = fm.height() + 6;
+  QPixmap *pix;
   QPixmap pix_scaled;
+  struct sprite *sprite;
+
   eco_widget->setRowCount(0);
   eco_widget->clearContents();
   get_economy_report_data(building_entries, &entries_used,
@@ -824,14 +877,22 @@ void eco_report::update_report()
   for (i = 0; i < entries_used; i++) {
     struct improvement_entry *pentry = building_entries + i;
     struct impr_type *pimprove = pentry->type;
-    QPixmap *pix = get_building_sprite(tileset, pimprove)->pm;
-    pix_scaled = pix->scaledToHeight(h);
+
+    pix = NULL;
+    sprite = get_building_sprite(tileset, pimprove);
+    if (sprite != NULL){
+      pix = sprite->pm;
+    }
+    if (pix != NULL){
+      pix_scaled = pix->scaledToHeight(h);
+    } else {
+      pix_scaled.fill();
+    }
     cid cid = cid_encode_building(pimprove);
 
     eco_widget->insertRow(i);
     for (j = 0; j < 6; j++) {
       item = new QTableWidgetItem;
-      item->setTextAlignment(Qt::AlignHCenter);
       switch (j) {
       case 0:
         item->setData(Qt::DecorationRole, pix_scaled);
@@ -842,18 +903,19 @@ void eco_report::update_report()
         item->setText(improvement_name_translation(pimprove));
         break;
       case 2:
-        item->setText(QString::number(pentry->redundant));
+        item->setData(Qt::DisplayRole, pentry->redundant);
         break;
       case 3:
-        item->setText(QString::number(pentry->count));
+        item->setData(Qt::DisplayRole, pentry->count);
         break;
       case 4:
-        item->setText(QString::number(pentry->cost));
+        item->setData(Qt::DisplayRole, pentry->cost);
         break;
       case 5:
-        item->setText(QString::number(pentry->total_cost));
+        item->setData(Qt::DisplayRole, pentry->total_cost);
         break;
       }
+      item->setTextAlignment(Qt::AlignVCenter | Qt::AlignHCenter);
       eco_widget->setItem(i, j, item);
     }
   }
@@ -862,8 +924,13 @@ void eco_report::update_report()
   for (i = 0; i < entries_used; i++) {
     struct unit_entry *pentry = unit_entries + i;
     struct unit_type *putype = pentry->type;
-    QPixmap *pix = get_unittype_sprite(tileset, putype,
-                                       direction8_invalid(), true)->pm;
+
+    pix = NULL;
+    sprite = get_unittype_sprite(tileset, putype,
+                                       direction8_invalid(), true);
+    if (sprite != NULL){
+      pix = sprite->pm;
+    }
     cid cid = cid_encode_unit(putype);
 
     eco_widget->insertRow(i + max_row);
@@ -872,7 +939,10 @@ void eco_report::update_report()
       item->setTextAlignment(Qt::AlignHCenter);
       switch (j) {
       case 0:
-        item->setData(Qt::DecorationRole, *pix);
+        if (pix != NULL){
+          pix_scaled = pix->scaledToHeight(h);
+          item->setData(Qt::DecorationRole, pix_scaled);
+        }
         item->setData(Qt::UserRole, cid);
         break;
       case 1:
@@ -880,18 +950,19 @@ void eco_report::update_report()
         item->setText(utype_name_translation(putype));
         break;
       case 2:
-        item->setText(QString::number(0));
+        item->setData(Qt::DisplayRole, 0);
         break;
       case 3:
-        item->setText(QString::number(pentry->count));
+        item->setData(Qt::DisplayRole, pentry->count);
         break;
       case 4:
-        item->setText(QString::number(pentry->cost));
+        item->setData(Qt::DisplayRole, pentry->cost);
         break;
       case 5:
-        item->setText(QString::number(pentry->total_cost));
+        item->setData(Qt::DisplayRole, pentry->total_cost);
         break;
       }
+      item->setTextAlignment(Qt::AlignVCenter | Qt::AlignHCenter);
       eco_widget->setItem(max_row + i, j, item);
     }
   }
@@ -958,7 +1029,7 @@ void eco_report::disband_units()
 
   char buf[1024];
   QString s;
-  QMessageBox ask;
+  QMessageBox ask(this);
   int ret;
   selected = cid_decode(uid);
   struct unit_type *putype = selected.value.utype;
@@ -995,7 +1066,7 @@ void eco_report::sell_buildings()
   struct universal selected;
   char buf[1024];
   QString s;
-  QMessageBox ask;
+  QMessageBox ask(this);
   int ret;
   selected = cid_decode(uid);
   struct impr_type *pimprove = selected.value.building;
@@ -1032,7 +1103,7 @@ void eco_report::sell_redundant()
   struct universal selected;
   char buf[1024];
   QString s;
-  QMessageBox ask;
+  QMessageBox ask(this);
   int ret;
   selected = cid_decode(uid);
   struct impr_type *pimprove = selected.value.building;
@@ -1095,7 +1166,6 @@ endgame_report::endgame_report(const struct packet_endgame_report *packet): QWid
 endgame_report::~endgame_report()
 {
   gui()->remove_repo_dlg("END");
-  gui()->remove_place(index);
 }
 
 /**************************************************************************
@@ -1103,10 +1173,9 @@ endgame_report::~endgame_report()
 **************************************************************************/
 void endgame_report::init()
 {
-  index = gui()->gimme_place();
-  gui()->add_game_tab(this, _("Score"), index);
+  gui()->gimme_place(this, "END");
+  index = gui()->add_game_tab(this, _("Score"));
   gui()->game_tab_widget->setCurrentIndex(index);
-  gui()->add_repo_dlg("END");
 }
 
 /**************************************************************************

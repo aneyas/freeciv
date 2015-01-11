@@ -143,7 +143,7 @@ void update_info_label(void)
   }
 
   gtk_label_set_text(GTK_LABEL(main_label_info),
-                     get_info_label_text(!options.gui_gtk3_small_display_layout));
+                     get_info_label_text(!gui_gtk3_small_display_layout));
 
   set_indicator_icons(client_research_sprite(),
 		      client_warming_sprite(),
@@ -288,7 +288,7 @@ void get_overview_area_dimensions(int *width, int *height)
 void overview_size_changed(void)
 {
   gtk_widget_set_size_request(overview_canvas,
-                              options.overview.width, options.overview.height);
+			      overview.width, overview.height);
   update_map_canvas_scrollbars_size();
 }
 
@@ -315,11 +315,11 @@ struct canvas *get_overview_window(void)
 gboolean overview_canvas_draw(GtkWidget *w, cairo_t *cr, gpointer data)
 {
   gpointer source = (can_client_change_view()) ?
-                     (gpointer)options.overview.window : (gpointer)radar_gfx_sprite;
+                     (gpointer)overview.window : (gpointer)radar_gfx_sprite;
 
   if (source) {
     cairo_surface_t *surface = (can_client_change_view()) ?
-                                options.overview.window->surface :
+                                overview.window->surface :
                                 radar_gfx_sprite->surface;
 
     cairo_set_source_surface(cr, surface, 0, 0);
@@ -365,7 +365,6 @@ gboolean map_canvas_configure(GtkWidget *w, GdkEventConfigure *ev,
                               gpointer data)
 {
   map_canvas_resized(ev->width, ev->height);
-
   return TRUE;
 }
 
@@ -429,7 +428,9 @@ void dirty_all(void)
 **************************************************************************/
 void flush_dirty(void)
 {
-  gdk_window_process_updates(gtk_widget_get_window(map_canvas), FALSE);
+  if (map_canvas != NULL && gtk_widget_get_realized(map_canvas)) {
+    gdk_window_process_updates(gtk_widget_get_window(map_canvas), FALSE);
+  }
 }
 
 /****************************************************************************
@@ -461,7 +462,7 @@ void put_unit_gpixmap(struct unit *punit, GtkPixcomm *p)
 
   gtk_pixcomm_clear(p);
 
-  put_unit(punit, &canvas_store, 1.0, 0, 0);
+  put_unit(punit, &canvas_store, 0, 0);
 }
 
 
@@ -485,7 +486,7 @@ void put_unit_gpixmap_city_overlays(struct unit *punit, GtkPixcomm *p,
 /**************************************************************************
   Put overlay tile to pixmap
 **************************************************************************/
-void pixmap_put_overlay_tile(GdkWindow *pixmap, float zoom,
+void pixmap_put_overlay_tile(GdkWindow *pixmap,
 			     int canvas_x, int canvas_y,
 			     struct sprite *ssprite)
 {
@@ -496,7 +497,6 @@ void pixmap_put_overlay_tile(GdkWindow *pixmap, float zoom,
   }
 
   cr = gdk_cairo_create(pixmap);
-  cairo_scale(cr, zoom, zoom);
   cairo_set_source_surface(cr, ssprite->surface, canvas_x, canvas_y);
   cairo_paint(cr);
   cairo_destroy(cr);
@@ -518,30 +518,58 @@ void pixmap_put_overlay_tile_draw(struct canvas *pcanvas,
   }
 
   get_sprite_dimensions(ssprite, &sswidth, &ssheight);
-  canvas_put_sprite(pcanvas, canvas_x, canvas_y,
-                    ssprite, 0, 0, sswidth, ssheight);
 
   if (fog) {
-    if (!pcanvas->drawable) {
-      cr = cairo_create(pcanvas->surface);
-    } else {
-      cr = pcanvas->drawable;
+    struct color *fogcol = color_alloc(0.0, 0.0, 0.0);
+    cairo_surface_t *fog_surface;
+    struct sprite *fogged;
+    unsigned char *mask_in;
+    unsigned char *mask_out;
+    int i, j;
+
+    /* Create sprites fully transparent */
+    fogcol->color.alpha = 0.0;
+    fogged = create_sprite(sswidth, ssheight, fogcol);
+    fog_surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, sswidth, ssheight);
+
+    /* Calculate black fog mask from the original sprite,
+     * we don't want to blacken transparent parts of the sprite */
+    mask_in = cairo_image_surface_get_data(ssprite->surface);
+    mask_out = cairo_image_surface_get_data(fog_surface);
+
+    for (i = 0; i < sswidth; i++) {
+      for (j = 0; j < ssheight; j++) {
+#ifndef WORDS_BIGENDIAN
+        mask_out[(j * sswidth + i) * 4 + 3] = 0.65 * mask_in[(j * sswidth + i) * 4 + 3];
+#else  /* WORDS_BIGENDIAN */
+        mask_out[(j * sswidth + i) * 4 + 0] = 0.65 * mask_in[(j * sswidth + i) * 4 + 0];
+#endif /* WORDS_BIGENDIAN */
+      }
     }
 
-    if (pcanvas->drawable) {
-      cairo_save(cr);
-    }
+    cairo_surface_mark_dirty(fog_surface);
 
-    cairo_set_operator(cr, CAIRO_OPERATOR_HSL_COLOR);
-    cairo_scale(cr, pcanvas->zoom, pcanvas->zoom);
-    cairo_set_source_rgb(cr, 0.65, 0.65, 0.65);
-    cairo_fill(cr);
+    /* First copy original sprite canvas to intermediate sprite canvas */
+    cr = cairo_create(fogged->surface);
+    cairo_set_source_surface(cr, ssprite->surface, 0, 0);
+    cairo_paint(cr);
 
-    if (!pcanvas->drawable) {
-      cairo_destroy(cr);
-    } else {
-      cairo_restore(cr);
-    }
+    /* Then apply created fog to the intermediate sprite */
+    cairo_set_source_surface(cr, fog_surface, 0, 0);
+    cairo_paint(cr);
+    cairo_destroy(cr);
+
+    /* Put intermediate sprite to the target canvas */
+    canvas_put_sprite(pcanvas, canvas_x, canvas_y,
+                      fogged, 0, 0, sswidth, ssheight);
+
+    /* Free intermediate stuff */
+    cairo_surface_destroy(fog_surface);
+    free_sprite(fogged);
+    color_free(fogcol);
+  } else {
+    canvas_put_sprite(pcanvas, canvas_x, canvas_y,
+                      ssprite, 0, 0, sswidth, ssheight);
   }
 }
 
@@ -553,7 +581,7 @@ void put_cross_overlay_tile(struct tile *ptile)
   int canvas_x, canvas_y;
 
   if (tile_to_canvas_pos(&canvas_x, &canvas_y, ptile)) {
-    pixmap_put_overlay_tile(gtk_widget_get_window(map_canvas), map_zoom,
+    pixmap_put_overlay_tile(gtk_widget_get_window(map_canvas),
 			    canvas_x, canvas_y,
 			    get_attention_crosshair_sprite(tileset));
   }

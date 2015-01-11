@@ -39,8 +39,6 @@ libcivutility_la_SOURCES = \
 		netfile.h	\
 		netintf.c	\
 		netintf.h	\
-		pqueue.c	\
-		pqueue.h	\
 		mem.c           \
 		mem.h		\
 		rand.c		\
@@ -49,8 +47,6 @@ libcivutility_la_SOURCES = \
 		registry.h	\
 		registry_ini.c	\
 		registry_ini.h	\
-		registry_xml.c	\
-		registry_xml.h	\
 		section_file.c	\
 		section_file.h	\
 		shared.c	\
@@ -58,6 +54,7 @@ libcivutility_la_SOURCES = \
 		specenum_gen.h	\
 		spechash.h	\
 		speclist.h	\
+		specpq.h	\
 		specvec.h	\
 		string_vector.c	\
 		string_vector.h	\

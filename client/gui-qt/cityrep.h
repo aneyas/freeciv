@@ -40,6 +40,7 @@ extern "C" {
 // Qt
 #include <QAbstractListModel>
 #include <QItemDelegate>
+#include <QSortFilterProxyModel>
 #include <QTreeView>
 #include <QWidget>
 #include <QMenu>
@@ -56,6 +57,11 @@ class QSortFilterProxyModel;
 class QTableWidget;
 class QVBoxLayout;
 class city_report;
+
+class city_sort_model:public QSortFilterProxyModel
+{
+  bool lessThan(const QModelIndex &left, const QModelIndex &right) const;
+};
 
 /***************************************************************************
   Item delegate for painting in model of city table
@@ -136,7 +142,7 @@ class city_widget: public QTreeView
   QMenu select_menu;
   QMenu production_menu;
   enum menu_labels {
-    CHANGE_PROD_NOW,
+    CHANGE_PROD_NOW = 1,
     CHANGE_PROD_NEXT,
     CHANGE_PROD_LAST,
     CHANGE_PROD_BEF_LAST,
@@ -164,6 +170,7 @@ public slots:
   void center();
 
 private:
+  void restore_selection();
   void gen_cma_labels(QMap<QString, int> &list);
   void gen_worklist_labels(QMap<QString, int> &list);
   void gen_production_labels(menu_labels which, QMap<QString, cid> &list, 

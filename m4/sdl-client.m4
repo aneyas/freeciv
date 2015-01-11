@@ -18,23 +18,23 @@ AC_DEFUN([FC_SDL_CLIENT],
     if test "$sdl_found" = yes; then
       gui_sdl_cflags="$SDL_CFLAGS"
       gui_sdl_libs="$SDL_LIBS"
-      FC_SDL_PROJECT([SDL_image], [IMG_Load], [SDL/SDL_image.h])
+      FC_SDL_PROJECT([SDL_image], [IMG_Load], [SDL_image.h])
       if test "x$sdl_h_found" = "xyes" ; then
-        FC_SDL_PROJECT([SDL_gfx], [rotozoomSurface], [SDL/SDL_rotozoom.h])
+        FC_SDL_PROJECT([SDL_gfx], [rotozoomSurface], [SDL_rotozoom.h])
       else
         missing_project="SDL_image"
       fi
       if test "x$sdl_h_found" = "xyes" ; then
-        FC_SDL_PROJECT([SDL_ttf], [TTF_OpenFont], [SDL/SDL_ttf.h])
+        FC_SDL_PROJECT([SDL_ttf], [TTF_OpenFont], [SDL_ttf.h])
       elif test "x$missing_project" = "x" ; then
         missing_project="SDL_gfx"
       fi
       if test "x$sdl_h_found" = "xyes" ; then
-        AC_CHECK_FT2([2.1.3], [freetype_found="yes"],[freetype_found="no"])
+        AC_CHECK_FT2([2.1.3], [freetype_found="yes"], [freetype_found="no"])
         if test "$freetype_found" = yes; then
 	  gui_sdl_cflags="$gui_sdl_cflags $FT2_CFLAGS"
 	  gui_sdl_libs="$gui_sdl_libs $FT2_LIBS"
-          found_sdl_client=yes
+          found_client=yes
         elif test "x$gui_sdl" = "xyes"; then
           AC_MSG_ERROR([specified client 'sdl' not configurable (FreeType2 >= 2.1.3 is needed (www.freetype.org))])
         fi
@@ -51,7 +51,7 @@ AC_DEFUN([FC_SDL_CLIENT],
       fi
     fi
 
-    if test "$found_sdl_client" = yes; then
+    if test "$found_client" = yes; then
       gui_sdl=yes
       if test "x$client" = "xauto" ; then
         client=yes
@@ -60,7 +60,7 @@ AC_DEFUN([FC_SDL_CLIENT],
       dnl Check for libiconv (which is usually included in glibc, but may
       dnl be distributed separately).
       AM_ICONV
-      FC_LIBCHARSET
+      AM_LIBCHARSET
       AM_LANGINFO_CODESET
       gui_sdl_libs="$LIBICONV $gui_sdl_libs"
 

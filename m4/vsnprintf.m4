@@ -6,7 +6,7 @@ dnl "Reasonably sane" in this context means never clobbering memory beyond
 dnl the buffer supplied, and having a sensible return value.  It is
 dnl explicitly allowed not to NUL-terminate the return value, however.
 dnl
-dnl @version $Id$
+dnl @version $Id: vsnprintf.m4 21754 2012-08-07 11:14:18Z cazfi $
 dnl @author Gaute Strokkenes <gs234@cam.ac.uk>
 dnl
 AC_DEFUN([AC_FUNC_VSNPRINTF],

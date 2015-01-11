@@ -41,9 +41,13 @@ struct luascript_func {
 };
 
 #define SPECHASH_TAG luascript_func
-#define SPECHASH_ASTR_KEY_TYPE
-#define SPECHASH_IDATA_TYPE struct luascript_func *
-#define SPECHASH_IDATA_FREE func_destroy
+#define SPECHASH_KEY_TYPE char *
+#define SPECHASH_DATA_TYPE struct luascript_func *
+#define SPECHASH_KEY_VAL genhash_str_val_func
+#define SPECHASH_KEY_COMP genhash_str_comp_func
+#define SPECHASH_KEY_COPY genhash_str_copy_func
+#define SPECHASH_KEY_FREE genhash_str_free_func
+#define SPECHASH_DATA_FREE func_destroy
 #include "spechash.h"
 
 #define luascript_func_hash_keys_iterate(phash, key)                         \
@@ -127,7 +131,6 @@ void luascript_func_add_valist(struct fc_lua *fcl, const char *func_name,
                   func_name);
   } else {
     enum api_types *parg_types = fc_calloc(nargs, sizeof(*parg_types));
-    char *name = fc_strdup(func_name);
     int i;
 
     for (i = 0; i < nargs; i++) {
@@ -136,7 +139,7 @@ void luascript_func_add_valist(struct fc_lua *fcl, const char *func_name,
 
     pfunc = func_new(required, nargs, parg_types);
 
-    luascript_func_hash_insert(fcl->funcs, name, pfunc);
+    luascript_func_hash_insert(fcl->funcs, func_name, pfunc);
   }
 }
 

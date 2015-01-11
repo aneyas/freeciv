@@ -97,7 +97,7 @@ struct editor_state {
   struct edit_buffer *copybuf;
 };
 
-static struct editor_state *editor;
+static struct editor_state *editor = NULL;
 
 /****************************************************************************
   Initialize editor tool data.
@@ -126,22 +126,7 @@ static void tool_init(enum editor_tool_type ett, const char *name,
   tool->applied_player_no = 0;
 
   if (ett == ETT_TERRAIN_SPECIAL) {
-    struct extra_type *first_special = NULL;
-
-    extra_type_iterate(pextra) {
-      if (!is_extra_caused_by(pextra, EC_BASE)
-          && !is_extra_caused_by(pextra, EC_ROAD)) {
-        /* Considers extras that are neither bases or roads, specials */
-        first_special = pextra;
-        break;
-      }
-    } extra_type_iterate_end;
-
-    if (first_special != NULL) {
-      tool->value = extra_index(first_special);
-    } else {
-      tool->value = 0;
-    }
+    tool->value = S_IRRIGATION;
   } else {
     tool->value = 0;
   }
@@ -153,9 +138,7 @@ static void tool_init(enum editor_tool_type ett, const char *name,
 ****************************************************************************/
 void editor_init(void)
 {
-  if (editor != NULL) {
-    return;
-  }
+  fc_assert(editor == NULL);
 
   editor = fc_calloc(1, sizeof(struct editor_state));
 
@@ -201,6 +184,30 @@ void editor_init(void)
 
   editor->selected_tile_table = tile_hash_new();
   tile_hash_set_no_shrink(editor->selected_tile_table, TRUE);
+}
+
+/****************************************************************************
+  Clear the editor data which is game dependent.
+****************************************************************************/
+void editor_clear(void)
+{
+  fc_assert_ret(editor != NULL);
+
+  edit_buffer_clear(editor->copybuf);
+  tile_hash_clear(editor->selected_tile_table);
+}
+
+/****************************************************************************
+  Free the client's editor.
+****************************************************************************/
+void editor_free(void)
+{
+  fc_assert_ret(editor != NULL);
+
+  edit_buffer_free(editor->copybuf);
+  tile_hash_destroy(editor->selected_tile_table);
+  free(editor);
+  editor = NULL;
 }
 
 /****************************************************************************
@@ -383,17 +390,17 @@ static void editor_start_selection_rectangle(int canvas_x, int canvas_y)
 ****************************************************************************/
 static inline bool tile_really_has_any_specials(const struct tile *ptile)
 {
+  bv_special specials;
+
   if (!ptile) {
     return FALSE;
   }
 
-  extra_type_by_cause_iterate(EC_SPECIAL, pextra) {
-    if (tile_has_extra(ptile, pextra)) {
-      return TRUE;
-    }
-  } extra_type_by_cause_iterate_end;
+  specials = tile_specials(ptile);
 
-  return FALSE;
+  BV_CLR(specials, S_RESOURCE_VALID);
+
+  return BV_ISSET_ANY(specials);
 }
 
 /****************************************************************************
@@ -473,9 +480,9 @@ static void editor_grab_tool(const struct tile *ptile)
       score = 0;
       if (uclass_has_flag(unit_class(punit), UCF_UNREACHABLE)) {
         score = 5;
-      } else if (utype_move_type(unit_type(punit)) == UMT_LAND) {
+      } else if (is_ground_unit(punit)) {
         score = 4;
-      } else if (utype_move_type(unit_type(punit)) == UMT_SEA) {
+      } else if (is_sailing_unit(punit)) {
         score = 3;
       } else {
         score = 2;
@@ -503,26 +510,25 @@ static void editor_grab_tool(const struct tile *ptile)
     value = road_number(first_road);
 
   } else if (tile_really_has_any_specials(ptile)) {
-    struct extra_type *specials_array[MAX_EXTRA_TYPES];
-    int count = 0, i;
-    struct extra_type *special = NULL;
+    int specials_array[S_LAST];
+    int count = 0, i, special = -1;
 
-    extra_type_by_cause_iterate(EC_SPECIAL, s) {
+    tile_special_type_iterate(s) {
       specials_array[count++] = s;
-    } extra_type_by_cause_iterate_end;
+    } tile_special_type_iterate_end;
 
     /* Grab specials in reverse order of enum tile_special_type. */
 
     for (i = count - 1; i >= 0; i--) {
-      if (tile_has_extra(ptile, specials_array[i])) {
+      if (tile_has_special(ptile, specials_array[i])) {
         special = specials_array[i];
         break;
       }
     }
 
-    if (special != NULL) {
+    if (special >= 0) {
       ett = ETT_TERRAIN_SPECIAL;
-      value = special->data.special_idx;
+      value = special;
     }
   } else if (tile_resource(ptile) != NULL) {
     ett = ETT_TERRAIN_RESOURCE;
@@ -681,7 +687,7 @@ static void editor_end_selection_rectangle(int canvas_x, int canvas_y)
   gui_rect_iterate(mapview.gui_x0 + editor->selrect_x,
                    mapview.gui_y0 + editor->selrect_y,
                    editor->selrect_width, editor->selrect_height,
-                   ptile, pedge, pcorner, map_zoom) {
+                   ptile, pedge, pcorner) {
     if (ptile == NULL) {
       continue;
     }
@@ -1131,10 +1137,10 @@ const char *editor_tool_get_value_name(enum editor_tool_type emt, int value)
     return presource ? resource_name_translation(presource) : "";
     break;
   case ETT_TERRAIN_SPECIAL:
-    if (value < 0 || value >= extra_type_list_size(extra_type_list_by_cause(EC_SPECIAL))) {
+    if (!(0 <= value && value < S_LAST)) {
       return "";
     }
-    return extra_name_translation(special_extra_get(value));
+    return special_name_translation(value);
     break;
   case ETT_ROAD:
     proad = road_by_number(value);
@@ -1459,23 +1465,14 @@ void edit_buffer_copy(struct edit_buffer *ebuf, const struct tile *ptile)
 {
   struct tile *vtile;
   struct unit *vunit;
-  const struct tile *origin;
-  int dx, dy;
   bool copied = FALSE;
 
   if (!ebuf || !ptile) {
     return;
   }
 
-  origin = edit_buffer_get_origin(ebuf);
-  if (origin) {
-    map_distance_vector(&dx, &dy, origin, ptile);
-  } else {
-    dx = 0;
-    dy = 0;
-  }
   vtile = tile_virtual_new(NULL);
-  vtile->index = native_pos_to_index(dx, dy);
+  vtile->index = tile_index(ptile);
 
   edit_buffer_type_iterate(ebuf, type) {
     switch (type) {
@@ -1492,29 +1489,23 @@ void edit_buffer_copy(struct edit_buffer *ebuf, const struct tile *ptile)
       }
       break;
     case EBT_SPECIAL:
-      extra_type_by_cause_iterate(EC_SPECIAL, pextra) {
-        if (tile_has_extra(ptile, pextra)) {
-          tile_add_extra(vtile, pextra);
-          copied = TRUE;
-        }
-      } extra_type_by_cause_iterate_end;
+      if (tile_has_any_specials(ptile)) {
+        tile_set_specials(vtile, tile_specials(ptile));
+        copied = TRUE;
+      }
       break;
     case EBT_BASE:
-     extra_type_iterate(pextra) {
-        if (tile_has_extra(ptile, pextra)
-            && is_extra_caused_by(pextra, EC_BASE)) {
-          tile_add_extra(vtile, pextra);
-          copied = TRUE;
-        }
-      } extra_type_iterate_end;
+      if (tile_has_any_bases(ptile)) {
+        tile_set_bases(vtile, tile_bases(ptile));
+        copied = TRUE;
+      }
+      break;
     case EBT_ROAD:
-     extra_type_iterate(pextra) {
-        if (tile_has_extra(ptile, pextra)
-            && is_extra_caused_by(pextra, EC_ROAD)) {
-          tile_add_extra(vtile, pextra);
-          copied = TRUE;
-        }
-      } extra_type_iterate_end;
+      if (BV_ISSET_ANY(ptile->roads)) {
+        vtile->roads = tile_roads(ptile);
+        copied = TRUE;
+      }
+      break;
     case EBT_UNIT:
       unit_list_iterate(ptile->units, punit) {
         if (!punit) {
@@ -1574,7 +1565,9 @@ static void fill_tile_edit_packet(struct packet_edit_tile *packet,
     return;
   }
   packet->tile = tile_index(ptile);
-  packet->extras = tile_extras(ptile);
+  packet->specials = tile_specials(ptile);
+  packet->bases = tile_bases(ptile);
+  packet->roads = tile_roads(ptile);
 
   presource = tile_resource(ptile);
   packet->resource = presource
@@ -1632,30 +1625,16 @@ static void paste_tile(struct edit_buffer *ebuf,
       dsend_packet_edit_tile_resource(my_conn, tile, value, 1);
       break;
     case EBT_SPECIAL:
-      extra_type_by_cause_iterate(EC_SPECIAL, pextra) {
-        if (tile_has_extra(vtile, pextra)) {
-          BV_SET(tile_packet.extras, extra_index(pextra));
-          send_edit_tile = TRUE;
-        }
-      } extra_type_by_cause_iterate_end;
+      tile_packet.specials = tile_specials(vtile);
+      send_edit_tile = TRUE;
       break;
     case EBT_BASE:
-      extra_type_iterate(pextra) {
-        if (tile_has_extra(vtile, pextra)
-            && is_extra_caused_by(pextra, EC_BASE)) {
-          BV_SET(tile_packet.extras, extra_index(pextra));
-          send_edit_tile = TRUE;
-        }
-      } extra_type_iterate_end;
+      tile_packet.bases = tile_bases(vtile);
+      send_edit_tile = TRUE;
       break;
     case EBT_ROAD:
-      extra_type_iterate(pextra) {
-        if (tile_has_extra(vtile, pextra)
-            && is_extra_caused_by(pextra, EC_ROAD)) {
-          BV_SET(tile_packet.extras, extra_index(pextra));
-          send_edit_tile = TRUE;
-        }
-      } extra_type_iterate_end;
+      tile_packet.roads = tile_roads(vtile);
+      send_edit_tile = TRUE;
       break;
     case EBT_UNIT:
       unit_list_iterate(vtile->units, vunit) {
@@ -1689,20 +1668,24 @@ static void paste_tile(struct edit_buffer *ebuf,
 void edit_buffer_paste(struct edit_buffer *ebuf, const struct tile *dest)
 {
   struct connection *my_conn = &client.conn;
-  const struct tile *ptile;
-  int dest_x, dest_y;
+  const struct tile *origin, *ptile;
+  int dx, dy;
 
   if (!ebuf || !dest) {
     return;
   }
 
-  index_to_map_pos(&dest_x, &dest_y, tile_index(dest));
+  /* Calculate vector. */
+  origin = edit_buffer_get_origin(ebuf);
+  fc_assert_ret(origin != NULL);
+  map_distance_vector(&dx, &dy, origin, dest);
+
   connection_do_buffer(my_conn);
   tile_list_iterate(ebuf->vtiles, vtile) {
     int virt_x, virt_y;
 
     index_to_map_pos(&virt_x, &virt_y, tile_index(vtile));
-    ptile = map_pos_to_tile(dest_x + virt_x, dest_y + virt_y);
+    ptile = map_pos_to_tile(virt_x + dx, virt_y + dy);
     if (!ptile) {
       continue;
     }

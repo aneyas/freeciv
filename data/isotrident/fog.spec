@@ -1,7 +1,8 @@
 [spec]
 
-options = "+Freeciv-spec-Devel-2013.Feb.13"
+options = "+Freeciv-2.5-spec"
 
+[info]
 artists = "unknown"
 
 [file]

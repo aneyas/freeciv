@@ -58,6 +58,7 @@
 #include "version.h"
 
 /* client */
+#include "chatline_common.h"
 #include "client_main.h"
 #include "climisc.h"
 #include "clinet.h"
@@ -69,7 +70,7 @@
 #include "tilespec.h"
 
 /* gui-xaw */
-#include "xaw_actions.h"
+#include "actions.h"
 #include "colors.h"
 #include "dialogs.h"
 #include "graphics.h"
@@ -319,7 +320,8 @@ int main(int argc, char **argv)
 void ui_main(int argc, char *argv[])
 {
   int i;
-  struct sprite *icon; 
+  struct sprite *icon;
+  const char *rev_ver;
 
   parse_options(argc, argv);
 
@@ -518,6 +520,14 @@ void ui_main(int argc, char *argv[])
     XtParseTranslationTable ("<Message>WM_PROTOCOLS: msg-quit-freeciv()"));
 
   XtSetSensitive(toplevel, FALSE);
+
+  rev_ver = fc_git_revision();
+  if (rev_ver != NULL) {
+    char buffer[512];
+
+    fc_snprintf(buffer, sizeof(buffer), _("Commit: %s"), rev_ver);
+    output_window_append(ftc_client, buffer);
+  }
 
   XtAppMainLoop(app_context);
 }
@@ -732,10 +742,10 @@ void setup_widgets(void)
 
 
 
-  outputwindow_text= I_SW(XtVaCreateManagedWidget("outputwindowtext", 
-						  asciiTextWidgetClass, 
-						  bottom_form,
-						  NULL));
+  outputwindow_text = I_SW(XtVaCreateManagedWidget("outputwindowtext",
+                                                   asciiTextWidgetClass,
+                                                   bottom_form,
+                                                   NULL));
 
 
   inputline_text= XtVaCreateManagedWidget("inputlinetext", 
@@ -917,7 +927,7 @@ void set_unit_icon(int idx, struct unit *punit)
   if (punit) {
     struct canvas store = {XawPixcommPixmap(w)};
 
-    put_unit(punit, &store, 1.0, 0, 0);
+    put_unit(punit, &store, 0, 0);
     xaw_expose_now(w);
   }
 }
@@ -1147,14 +1157,6 @@ void gui_ggz_embed_ensure_server(void)
   Updates a gui font style.
 **************************************************************************/
 void gui_update_font(const char *font_name, const char *font_value)
-{
-  /* PORTME */
-}
-
-/**************************************************************************
-  Insert build information to help
-**************************************************************************/
-void insert_client_build_info(char *outbuf, size_t outlen)
 {
   /* PORTME */
 }

@@ -37,6 +37,7 @@ Freeciv - Copyright (C) 2004 - The Freeciv Project
 #endif
 
 /* utility */
+#include "astring.h"
 #include "capability.h"
 #include "fciconv.h"
 #include "fcintl.h"
@@ -64,7 +65,6 @@ Freeciv - Copyright (C) 2004 - The Freeciv Project
 #define NUMBER_OF_TRIES 500
   
 #ifdef WIN32_NATIVE
-/* FIXME: this is referenced directly in gui-win32/connectdlg.c. */
 HANDLE server_process = INVALID_HANDLE_VALUE;
 HANDLE loghandle = INVALID_HANDLE_VALUE;
 #else
@@ -198,17 +198,13 @@ bool client_start_server(void)
   char cmdline4[512];
   char logcmdline[512];
   char scriptcmdline[512];
+  char savefilecmdline[512];
   char savescmdline[512];
   char scenscmdline[512];
 # endif /* WIN32_NATIVE */
 
 #ifdef IPV6_SUPPORT
-  /* We want port that is free in IPv4 even if we (the client) have
-   * IPv6 support. In the unlikely case that local server is IPv4-only
-   * (meaning that it has to be from different build than client) we
-   * have to give port that it can use. IPv6-enabled client would first
-   * try same port in IPv6 and if that fails, fallback to IPv4 too. */
-  enum fc_addr_family family = FC_ADDR_IPV4;
+  enum fc_addr_family family = FC_ADDR_ANY;
 #else
   enum fc_addr_family family = FC_ADDR_IPV4;
 #endif /* IPV6_SUPPORT */
@@ -224,7 +220,7 @@ bool client_start_server(void)
    * used by standalone server on Windows where this is known to be buggy
    * by not starting from DEFAULT_SOCK_PORT but from one higher. */
   internal_server_port = find_next_free_port(DEFAULT_SOCK_PORT + 1,
-                                             family, "localhost");
+                                             family, "localhost", TRUE);
 
   if (internal_server_port < 0) {
     output_window_append(ftc_client, _("Couldn't start the server."));
@@ -234,14 +230,10 @@ bool client_start_server(void)
   }
 
 # ifdef HAVE_WORKING_FORK
-  server_pid = fork();
-
-  if (server_pid == 0) {
-    int fd, argc = 0;
+  {
+    int argc = 0;
     const int max_nargs = 18;
     char *argv[max_nargs + 1], port_buf[32];
-
-    /* inside the child */
 
     /* Set up the command-line parameters. */
     fc_snprintf(port_buf, sizeof(port_buf), "%d", internal_server_port);
@@ -269,50 +261,73 @@ bool client_start_server(void)
       argv[argc++] = "--read";
       argv[argc++] = scriptfile;
     }
+    if (savefile) {
+      argv[argc++] = "--file";
+      argv[argc++] = savefile;
+    }
     argv[argc] = NULL;
     fc_assert(argc <= max_nargs);
 
-    /* avoid terminal spam, but still make server output available */ 
-    fclose(stdout);
-    fclose(stderr);
-
-    /* FIXME: include the port to avoid duplication? */
-    if (logfile) {
-      fd = open(logfile, O_WRONLY | O_CREAT | O_APPEND, 0644);
-
-      if (fd != 1) {
-        dup2(fd, 1);
+    {
+      struct astring options = ASTRING_INIT;
+      int i;
+      for (i = 1; i < argc; i++) {
+        astr_add(&options, i == 1 ? "%s" : " %s", argv[i]);
       }
-      if (fd != 2) {
-        dup2(fd, 2);
-      }
-      fchmod(1, 0644);
+      log_verbose("Arguments to spawned server: %s",
+                  astr_str(&options));
+      astr_free(&options);
     }
 
-    /* If it's still attatched to our terminal, things get messed up, 
-      but freeciv-server needs *something* */ 
-    fclose(stdin);
-    fd = open("/dev/null", O_RDONLY);
-    if (fd != 0) {
-      dup2(fd, 0);
-    }
+    server_pid = fork();
 
-    /* these won't return on success */
+    if (server_pid == 0) {
+      int fd;
+
+      /* inside the child */
+
+      /* avoid terminal spam, but still make server output available */ 
+      fclose(stdout);
+      fclose(stderr);
+
+      /* FIXME: include the port to avoid duplication? */
+      if (logfile) {
+        fd = open(logfile, O_WRONLY | O_CREAT | O_APPEND, 0644);
+
+        if (fd != 1) {
+          dup2(fd, 1);
+        }
+        if (fd != 2) {
+          dup2(fd, 2);
+        }
+        fchmod(1, 0644);
+      }
+
+      /* If it's still attatched to our terminal, things get messed up, 
+        but freeciv-server needs *something* */ 
+      fclose(stdin);
+      fd = open("/dev/null", O_RDONLY);
+      if (fd != 0) {
+        dup2(fd, 0);
+      }
+
+      /* these won't return on success */
 #ifdef DEBUG
-    /* Search under current directory (what ever that happens to be)
-     * only in debug builds. This allows running freeciv directly from build
-     * tree, but could be considered security risk in release builds. */
-    execvp("./fcser", argv);
-    execvp("./server/freeciv-server", argv);
+      /* Search under current directory (what ever that happens to be)
+       * only in debug builds. This allows running freeciv directly from build
+       * tree, but could be considered security risk in release builds. */
+      execvp("./fcser", argv);
+      execvp("./server/freeciv-server", argv);
 #endif /* DEBUG */
-    execvp(BINDIR "/freeciv-server", argv);
-    execvp("freeciv-server", argv);
+      execvp(BINDIR "/freeciv-server", argv);
+      execvp("freeciv-server", argv);
 
-    /* This line is only reached if freeciv-server cannot be started, 
-     * so we kill the forked process.
-     * Calling exit here is dangerous due to X11 problems (async replies) */ 
-    _exit(1);
-  } 
+      /* This line is only reached if freeciv-server cannot be started, 
+       * so we kill the forked process.
+       * Calling exit here is dangerous due to X11 problems (async replies) */ 
+      _exit(1);
+    } 
+  }
 # else /* HAVE_WORKING_FORK */
 #  ifdef WIN32_NATIVE
   if (logfile) {
@@ -332,6 +347,7 @@ bool client_start_server(void)
   /* Set up the command-line parameters. */
   logcmdline[0] = 0;
   scriptcmdline[0] = 0;
+  savefilecmdline[0] = 0;
 
   /* the server expects command line arguments to be in local encoding */ 
   if (logfile) {
@@ -350,6 +366,14 @@ bool client_start_server(void)
                 scriptfile_in_local_encoding);
     free(scriptfile_in_local_encoding);
   }
+  if (savefile) {
+    char *savefile_in_local_encoding =
+        internal_to_local_string_malloc(savefile);
+
+    fc_snprintf(savefilecmdline, sizeof(savefilecmdline),  " --file %s",
+                savefile_in_local_encoding);
+    free(savefile_in_local_encoding);
+  }
 
   interpret_tilde(savesdir, sizeof(savesdir), "~/.freeciv/saves");
   internal_to_local_string_buffer(savesdir, savescmdline, sizeof(savescmdline));
@@ -358,10 +382,10 @@ bool client_start_server(void)
   internal_to_local_string_buffer(scensdir, scenscmdline, sizeof(scenscmdline));
 
   fc_snprintf(options, sizeof(options),
-              "-p %d --bind localhost -q 1 -e%s%s --saves \"%s\" "
+              "-p %d --bind localhost -q 1 -e%s%s%s --saves \"%s\" "
               "--scenarios \"%s\" -A none",
-              internal_server_port, logcmdline, scriptcmdline, savescmdline,
-              scenscmdline);
+              internal_server_port, logcmdline, scriptcmdline, savefilecmdline,
+              savescmdline, scenscmdline);
   fc_snprintf(cmdline1, sizeof(cmdline1), "./fcser %s", options);
   fc_snprintf(cmdline2, sizeof(cmdline2),
               "./server/freeciv-server %s", options);
@@ -369,6 +393,8 @@ bool client_start_server(void)
               BINDIR "/freeciv-server %s", options);
   fc_snprintf(cmdline4, sizeof(cmdline4),
               "freeciv-server %s", options);
+
+  log_verbose("Arguments to spawned server: %s", options);
 
   if (
 #ifdef DEBUG

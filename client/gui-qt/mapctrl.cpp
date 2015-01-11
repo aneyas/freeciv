@@ -94,7 +94,7 @@ void create_line_at_mouse_pos(void)
 **************************************************************************/
 void update_rect_at_mouse_pos(void)
 {
-  /* PORTME */
+  /* PLS DONT PORT IT */
 }
 
 /**************************************************************************
@@ -168,13 +168,31 @@ void map_view::keyPressEvent(QKeyEvent * event)
 void map_view::mousePressEvent(QMouseEvent *event)
 {
   struct tile *ptile = NULL;
+  bool alt;
+  bool ctrl;
   QPoint pos;
 
+  alt = false;
+  ctrl = false;
+
+  if (event->modifiers() & Qt::AltModifier) {
+    alt = true;
+  }
+  if (event->modifiers() & Qt::ControlModifier) {
+    ctrl = true;
+  }
   pos = gui()->mapview_wdg->mapFromGlobal(QCursor::pos());
 
   if (event->button() == Qt::RightButton) {
-    recenter_button_pressed(event->x(), event->y());
-    ::gui()->minimapview_wdg->update_image();
+    if (alt && ctrl){
+      ptile = canvas_pos_to_tile(pos.x(), pos.y());
+      if (ptile) {
+        gui()->infotab->chtwdg->make_link(ptile);
+      }
+    } else {
+      recenter_button_pressed(event->x(), event->y());
+      ::gui()->minimapview_wdg->update_image();
+    }
   }
 
   /* Left Button */
@@ -196,6 +214,9 @@ void map_view::mouseReleaseEvent(QMouseEvent *event)
   if (event->button() == Qt::MiddleButton) {
     gui()->popdown_tile_info();
   }
+  if (event->button() == Qt::LeftButton) {
+    release_goto_button(event->x(), event->y());
+  }
 }
 
 /**************************************************************************
@@ -204,6 +225,8 @@ void map_view::mouseReleaseEvent(QMouseEvent *event)
 void map_view::mouseMoveEvent(QMouseEvent *event)
 {
   update_line(event->pos().x(), event->pos().y());
+  control_mouse_cursor(canvas_pos_to_tile(event->pos().x(),
+                                          event->pos().y()));
 }
 
 /**************************************************************************

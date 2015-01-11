@@ -42,6 +42,17 @@ static QRect check_box_rect(const QStyleOptionViewItem
   return QRect(check_box_point, check_box_rect.size());
 }
 
+/**************************************************************************
+  Slighty increase deafult cell height
+**************************************************************************/
+QSize plr_item_delegate::sizeHint(const QStyleOptionViewItem &option,
+                                  const QModelIndex &index) const
+{
+  QSize r;
+  r =  QItemDelegate::sizeHint(option, index);
+  r.setHeight(r.height() + 4);
+  return r;
+}
 
 /**************************************************************************
   Paint evenet for custom player item delegation
@@ -52,7 +63,10 @@ void plr_item_delegate::paint(QPainter *painter, const QStyleOptionViewItem
   QStyleOptionButton but;
   QStyleOptionButton cbso;
   bool b;
+  QString str;
+  QRect rct;
   QPixmap pix(16, 16);
+
   QStyleOptionViewItemV3 opt = QItemDelegate::setOptions(index, option);
   painter->save();
   switch (player_dlg_columns[index.column()].type) {
@@ -80,16 +94,22 @@ void plr_item_delegate::paint(QPainter *painter, const QStyleOptionViewItem
     QApplication::style()->drawControl(QStyle::CE_CheckBox, &cbso, painter);
     break;
   case COL_TEXT:
-    QItemDelegate::drawBackground(painter, opt, index);
-    opt.displayAlignment = Qt::AlignLeft;
-    QItemDelegate::drawDisplay(painter, opt, option.rect,
-                               index.data().toString());
+    QItemDelegate::paint(painter, option, index);
     break;
   case COL_RIGHT_TEXT:
     QItemDelegate::drawBackground(painter, opt, index);
     opt.displayAlignment = Qt::AlignRight;
-    QItemDelegate::drawDisplay(painter, opt, option.rect,
-                               index.data().toString());
+    rct = option.rect;
+    rct.setTop((rct.top() + rct.bottom()) / 2
+               - opt.fontMetrics.height() / 2);
+    rct.setBottom((rct.top()+rct.bottom()) / 2
+                  + opt.fontMetrics.height() / 2);
+    if (index.data().toInt() == -1){
+      str = "?";
+    } else {
+      str = index.data().toString();
+    }
+    QItemDelegate::drawDisplay(painter, opt, rct, str);
     break;
   default:
     QItemDelegate::paint(painter, option, index);
@@ -119,6 +139,7 @@ bool plr_item::setData(int column, const QVariant &value, int role)
 QVariant plr_item::data(int column, int role) const
 {
   QPixmap *pix;
+  QString str;
   struct player_dlg_column *pdc;
 
   if (role == Qt::UserRole) {
@@ -140,8 +161,16 @@ QVariant plr_item::data(int column, int role) const
     return pdc->bool_func(ipplayer);
     break;
   case COL_TEXT:
-  case COL_RIGHT_TEXT:
     return pdc->func(ipplayer);
+    break;
+  case COL_RIGHT_TEXT:
+    str = pdc->func(ipplayer);
+    if (str.toInt() != 0){
+      return str.toInt();
+    } else if (str == "?"){
+      return -1;
+    }
+    return str;
   default:
     return QVariant();
   }
@@ -226,6 +255,9 @@ void plr_model::populate()
 {
   plr_item *pi;
   players_iterate(pplayer) {
+    if ((is_barbarian(pplayer))){
+      continue;
+    }
     pi = new plr_item(pplayer);
     plr_list << pi;
   } players_iterate_end;
@@ -253,6 +285,7 @@ plr_widget::plr_widget(plr_report *pr): QTreeView()
   setSelectionMode(QAbstractItemView::SingleSelection);
   setItemsExpandable(false);
   setAutoScroll(true);
+  setAlternatingRowColors(true);
   header()->setContextMenuPolicy(Qt::CustomContextMenu);
   hide_columns();
   connect(header(), SIGNAL(customContextMenuRequested(const QPoint &)),
@@ -327,11 +360,13 @@ void plr_widget::nation_selected(const QItemSelection &sl,
   QModelIndexList indexes = sl.indexes();
   struct city *pcity;
   const struct player_diplstate *state;
-  struct research *my_research, *research;
+  struct player_research *research;
   char tbuf[256];
   QString res;
   QString sp = " ";
   QString nl = "<br>";
+  QStringList sorted_list_a;
+  QStringList sorted_list_b;
   struct player *pplayer;
   int a , b;
   bool added;
@@ -356,7 +391,7 @@ void plr_widget::nation_selected(const QItemSelection &sl,
     return;
   }
   pcity = player_capital(pplayer);
-  research = research_get(pplayer);
+  research = player_research_get(pplayer);
 
   switch (research->researching) {
   case A_UNKNOWN:
@@ -366,10 +401,9 @@ void plr_widget::nation_selected(const QItemSelection &sl,
     res = _("(none)");
     break;
   default:
-    res = QString(research_advance_name_translation(research,
-                                                    research->researching))
+    res = QString(advance_name_researching(pplayer))
           + sp + "(" + QString::number(research->bulbs_researched) + "/"
-          + QString::number(research->researching_cost) + ")";
+          + QString::number(research->client.researching_cost) + ")";
     break;
   }
   /** Formatting rich text */
@@ -378,7 +412,7 @@ void plr_widget::nation_selected(const QItemSelection &sl,
     + QString(nation_adjective_for_player(pplayer))
     + QString("</td><tr><td><b>") + N_("Ruler:") + QString("</b></td><td>")
     + QString(ruler_title_for_player(pplayer, tbuf, sizeof(tbuf)))
-    + QString("</td></tr><tr><td><b>") + N_("Government:") 
+    + QString("</td></tr><tr><td><b>") + N_("Government:")
     + QString("</b></td><td>") + QString(government_name_for_player(pplayer))
     + QString("</td></tr><tr><td><b>") + N_("Capital:")
     + QString("</b></td><td>")
@@ -401,71 +435,83 @@ void plr_widget::nation_selected(const QItemSelection &sl,
     }
     entry_exist = false;
     players_iterate_alive(other) {
-      if (other == pplayer) {
+      if (other == pplayer || is_barbarian(other)) {
         continue;
       }
       state = player_diplstate_get(pplayer, other);
       if (static_cast<int>(state->type) == i) {
         if (added == false) {
           ally_str = ally_str  + QString("<b>")
-                     + QString(diplstate_type_translated_name(
-                                 static_cast<diplstate_type>(i)))
-                     + ": "  + QString("</b>") + nl;
+                   + QString(diplstate_text(static_cast<diplstate_type>(i)))
+                   + ": "  + QString("</b>") + nl;
           added = true;
         }
         ally_str = ally_str + nation_plural_for_player(other) + ", ";
         entry_exist = true;
       }
-    }
-    players_iterate_alive_end;
+    } players_iterate_alive_end;
     if (entry_exist) {
       ally_str.replace(ally_str.lastIndexOf(","), 1, ".");
     }
   }
   me = client_player();
-  my_research = research_get(me);
-  if ((player_has_embassy(me, pplayer) || client_is_global_observer())
-      && me != pplayer) {
-    a = 0;
-    b = 0;
-    techs_known = QString("<b>") + _("Techs unknown by") + sp
-                  + QString(nation_adjective_for_player(pplayer)) + sp
-                  + QString(_("nation")) + QString("</b> :");
-    techs_unknown = QString("<b>") + _("Techs unknown by you") + sp
-                    + QString("</b> :");
+  if (!client_is_global_observer()) {
+    if (player_has_embassy(me, pplayer) && me != pplayer) {
+      a = 0;
+      b = 0;
+      techs_known = QString(_("<b>Techs unknown by %1:</b>")).
+                    arg(nation_plural_for_player(pplayer));
+      techs_unknown = QString(_("<b>Techs unknown by you :</b>"));
 
+      advance_iterate(A_FIRST, padvance) {
+        tech_id = advance_number(padvance);
+        if (player_invention_state(me, tech_id) == TECH_KNOWN
+            && (player_invention_state(pplayer, tech_id) == TECH_UNKNOWN)) {
+          a++;
+          sorted_list_a << advance_name_for_player(pplayer, tech_id);
+        }
+        if (player_invention_state(me, tech_id) == TECH_UNKNOWN
+            && (player_invention_state(pplayer, tech_id) == TECH_KNOWN)) {
+          b++;
+          sorted_list_b << advance_name_for_player(pplayer, tech_id);
+        }
+      } advance_iterate_end;
+      sorted_list_a.sort(Qt::CaseInsensitive);
+      sorted_list_b.sort(Qt::CaseInsensitive);
+      foreach (res, sorted_list_a) {
+        techs_known = techs_known + QString("<i>") + res + ","
+                      + QString("</i>") + sp;
+      }
+      foreach (res, sorted_list_b) {
+        techs_unknown = techs_unknown + QString("<i>") + res + ","
+                        + QString("</i>") + sp;
+      }
+      if (a == 0) {
+        techs_known = techs_known + QString("<i>") + sp
+                      + QString(_("None")) + QString("</i>");
+      } else {
+        techs_known.replace(techs_known.lastIndexOf(","), 1, ".");
+      }
+      if (b == 0) {
+        techs_unknown = techs_unknown + QString("<i>") + sp
+                        + QString(_("None")) + QString("</i>");
+      } else {
+        techs_unknown.replace(techs_unknown.lastIndexOf(","), 1, ".");
+      }
+      tech_str = techs_known + nl + techs_unknown;
+    }
+  } else {
+    tech_str = QString(_("<b>Techs known by %1:</b>")).
+               arg(nation_plural_for_player(pplayer));
     advance_iterate(A_FIRST, padvance) {
       tech_id = advance_number(padvance);
-      if (research_invention_state(my_research, tech_id) == TECH_KNOWN
-          && (research_invention_state(research, tech_id) == TECH_UNKNOWN)) {
-        a++;
-        techs_known = techs_known + QString("<i>") 
-                      + research_advance_name_translation(research, tech_id)
-                      + "," + QString("</i>") + sp;
-      }
-      if (research_invention_state(my_research, tech_id) == TECH_UNKNOWN
-          && (research_invention_state(research, tech_id) == TECH_KNOWN)) {
-        b++;
-        techs_unknown = techs_unknown + QString("<i>")
-                        + research_advance_name_translation(research,
-                                                            tech_id)
-                        + "," + QString("</i>") + sp;
-      }
+      sorted_list_a << advance_name_for_player(pplayer, tech_id);
     } advance_iterate_end;
-
-    if (a == 0) {
-      techs_known = techs_known + QString("<i>") + sp
-                    + QString(_("None")) + QString("</i>");
-    } else {
-      techs_known.replace(techs_known.lastIndexOf(","), 1, ".");
+    sorted_list_a.sort(Qt::CaseInsensitive);
+    foreach (res, sorted_list_a) {
+      tech_str = tech_str + QString("<i>") + res + ","
+                    + QString("</i>") + sp;
     }
-    if (b == 0) {
-      techs_unknown = techs_unknown + QString("<i>") + sp
-                      + QString(_("None")) + QString("</i>");
-    } else {
-      techs_unknown.replace(techs_unknown.lastIndexOf(","), 1, ".");
-    }
-    tech_str = techs_known + nl + techs_unknown;
   }
   plr->update_report();
 }
@@ -545,7 +591,6 @@ plr_report::plr_report():QWidget()
 plr_report::~plr_report()
 {
   gui()->remove_repo_dlg("PLR");
-  gui()->remove_place(index);
 }
 
 /**************************************************************************
@@ -553,10 +598,9 @@ plr_report::~plr_report()
 **************************************************************************/
 void plr_report::init()
 {
-  index = gui()->gimme_place();
-  gui()->add_game_tab(this, _("Players"), index);
+  gui()->gimme_place(this, "PLR");
+  index = gui()->add_game_tab(this, _("Players"));
   gui()->game_tab_widget->setCurrentIndex(index);
-  gui()->add_repo_dlg("PLR");
 }
 
 /**************************************************************************

@@ -28,6 +28,29 @@ static bool can_city_sell_universal(const struct city *pcity,
                                     struct universal target);
 
 /***************************************************************************
+  Overriden compare for sorting items
+***************************************************************************/
+bool city_sort_model::lessThan(const QModelIndex &left,
+                               const QModelIndex &right) const
+{
+  QVariant qleft;
+  QVariant qright;
+  int i;
+
+  qleft = sourceModel()->data(left);
+  qright = sourceModel()->data(right);
+  i = cityrepfield_compare(qleft.toString().toLocal8Bit().data(),
+                           qright.toString().toLocal8Bit().data());
+
+  if (i >= 0) {
+    return true;
+  } else {
+    return false;
+  }
+}
+
+
+/***************************************************************************
   City item delegate constructor
 ***************************************************************************/
 city_item_delegate::city_item_delegate(QObject *parent)
@@ -42,18 +65,37 @@ city_item_delegate::city_item_delegate(QObject *parent)
 /***************************************************************************
   City item delgate paint event
 ***************************************************************************/
-void city_item_delegate::paint(QPainter *painter, 
-                               const QStyleOptionViewItem &option, 
+void city_item_delegate::paint(QPainter *painter,
+                               const QStyleOptionViewItem &option,
                                const QModelIndex &index) const
 {
   QStyleOptionViewItemV3 opt = QItemDelegate::setOptions(index, option);
+  QString txt;
+  QFont font;
+  QPalette palette;
+  struct city_report_spec *spec;
+  spec = city_report_specs + index.column();
+  txt = spec->tagname;
+  if (txt == "cityname") {
+    font.setCapitalization(QFont::SmallCaps);
+    font.setBold(true);
+    opt.font = font;
+  }
+  if (txt == "hstate_verbose") {
+    font.setItalic(true);
+    opt.font = font;
+  }
+  if (txt == "prodplus") {
+    txt = index.data().toString();
+    if (txt.toInt() < 0) {
+      font.setBold(true);
+      palette.setColor(QPalette::Text, QColor(255, 0, 0));
+      opt.font = font;
+      opt.palette = palette;
+    }
+  }
 
-  painter->save();
-    QItemDelegate::drawBackground(painter, opt, index);
-    opt.displayAlignment = Qt::AlignLeft;
-    QItemDelegate::drawDisplay(painter, opt, option.rect,
-                               index.data().toString());
-   painter->restore();
+  QItemDelegate::paint(painter, opt, index);
 }
 
 /***************************************************************************
@@ -64,7 +106,7 @@ QSize city_item_delegate::sizeHint(const QStyleOptionViewItem &option,
 {
   QSize s = QItemDelegate::sizeHint(option, index);
 
-  s.setHeight(item_height);
+  s.setHeight(item_height + 4);
   return s;
 }
 
@@ -109,7 +151,6 @@ QVariant city_item::data(int column, int role) const
   spec = city_report_specs+column;
   fc_snprintf(buf, sizeof(buf), "%*s", NEG_VAL(spec->width),
                 spec->func(i_city, spec->data));
-
   return QString(buf);
 }
 
@@ -183,6 +224,10 @@ QVariant city_model::headerData(int section, Qt::Orientation orientation,
                 NEG_VAL(spec->width), spec->title1 ? spec->title1 : "",
                 NEG_VAL(spec->width), spec->title2 ? spec->title2 : "");
       return QString(buf);
+    }
+    if (role == Qt::ToolTipRole) {
+      spec = city_report_specs + section;
+      return QString(spec->explanation);
     }
   }
   return QVariant();
@@ -261,9 +306,35 @@ void city_model::all_changed()
   beginResetModel();
   populate();
   endResetModel();
-  for (int i = 0; i < city_list.count(); i++) {
-    notify_city_changed(i);
+}
+
+/***************************************************************************
+  Resores last selection
+***************************************************************************/
+void city_widget::restore_selection()
+{
+  QItemSelection selection;
+  QItemSelection s;
+  QModelIndex i;
+  struct city *pcity;
+  QVariant qvar;
+
+  if (selected_cities.isEmpty()) {
+    return;
   }
+  for (int j = 0; j < filter_model->rowCount(); j++) {
+    i = filter_model->index(j, 0);
+    qvar = i.data(Qt::UserRole);
+    if (qvar.isNull()) {
+      continue;
+    }
+    pcity = reinterpret_cast<city *>(qvar.value<void *>());
+    if (selected_cities.contains(pcity)) {
+      selection.append(QItemSelectionRange(i));
+    }
+  }
+  selectionModel()->select(selection, QItemSelectionModel::Rows
+                           | QItemSelectionModel::SelectCurrent);
 }
 
 /***************************************************************************
@@ -275,7 +346,7 @@ city_widget::city_widget(city_report *ctr): QTreeView()
   c_i_d = new city_item_delegate(this);
   setItemDelegate(c_i_d);
   list_model = new city_model(this);
-  filter_model = new QSortFilterProxyModel();
+  filter_model = new city_sort_model();
   filter_model->setDynamicSortFilter(true);
   filter_model->setSourceModel(list_model);
   filter_model->setFilterRole(Qt::DisplayRole);
@@ -284,6 +355,7 @@ city_widget::city_widget(city_report *ctr): QTreeView()
   setAllColumnsShowFocus(true);
   setSortingEnabled(true);
   setSelectionMode(QAbstractItemView::ExtendedSelection);
+  setSelectionBehavior(QAbstractItemView::SelectRows);
   setItemsExpandable(false);
   setAutoScroll(true);
   header()->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -323,7 +395,7 @@ void city_widget::city_view()
   pcity = selected_cities[0];
 
   Q_ASSERT(pcity != NULL);
-  if (options.center_when_popup_city) {
+  if (center_when_popup_city) {
     center_tile_mapcanvas(pcity->tile);
   }
   qtg_real_city_dialog_popup(pcity);
@@ -399,8 +471,16 @@ void city_widget::display_list_menu(const QPoint &)
   QMenu list_menu(this);
   QAction *act;
   QAction cty_view(style()->standardIcon(QStyle::SP_CommandLink),
-                   _("?verb:View"), 0);
-  QAction cty_buy(_("Buy"), 0);
+                   Q_("?verb:View"), 0);
+  sell_gold = 0;
+  if (selected_cities.isEmpty()) {
+    return;
+  }
+  foreach (pcity, selected_cities) {
+    sell_gold = sell_gold + city_production_buy_gold_cost(pcity);
+  }
+  fc_snprintf(buf, sizeof(buf), _("Buy ( Cost: %d )"), sell_gold);
+  QAction cty_buy(QString(buf), 0);
   QAction cty_center(style()->standardIcon(QStyle::SP_ArrowRight),
                      _("Center"), 0);
   QAction wl_clear(_("Clear"), 0);
@@ -440,7 +520,7 @@ void city_widget::display_list_menu(const QPoint &)
     worklist_defined = false;
   }
   fill_data(WORKLIST_CHANGE, cma_labels, tmp2_menu);
-  some_menu = list_menu.addMenu(_("CMA"));
+  some_menu = list_menu.addMenu(_("Governor"));
   gen_cma_labels(cma_labels);
   fill_data(CMA, cma_labels, some_menu);
   some_menu = list_menu.addMenu(_("Sell"));
@@ -645,6 +725,7 @@ void city_widget::gen_production_labels(city_widget::menu_labels what,
 void city_widget::update_city(city *pcity)
 {
   list_model->city_changed(pcity);
+  restore_selection();
 }
 
 /***************************************************************************
@@ -652,7 +733,10 @@ void city_widget::update_city(city *pcity)
 ***************************************************************************/
 void city_widget::update_model()
 {
+  setUpdatesEnabled(false);
   list_model->all_changed();
+  restore_selection();
+  setUpdatesEnabled(true);
 }
 
 /***************************************************************************
@@ -760,7 +844,6 @@ city_report::city_report(): QWidget()
 city_report::~city_report()
 {
   gui()->remove_repo_dlg("CTS");
-  gui()->remove_place(index);
 }
 
 /***************************************************************************
@@ -768,10 +851,9 @@ city_report::~city_report()
 ***************************************************************************/
 void city_report::init()
 {
-  index = gui()->gimme_place();
-  gui()->add_game_tab(this, _("Cities"), index);
+  gui()->gimme_place(this, "CTS");
+  index = gui()->add_game_tab(this, _("Cities"));
   gui()->game_tab_widget->setCurrentIndex(index);
-  gui()->add_repo_dlg("CTS");
 }
 /***************************************************************************
   Updates whole report

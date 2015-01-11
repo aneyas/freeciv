@@ -118,6 +118,7 @@ public:
                   int recursive_nr);
   void resume_searching(int pos_x,int pos_y,int &w, int &h,
                         int wdtht, int hght, int recursive_nr);
+  void update_cursor(enum cursor_type);
 
 protected:
   void paintEvent(QPaintEvent *event);
@@ -126,6 +127,13 @@ protected:
   void mousePressEvent(QMouseEvent *event);
   void mouseReleaseEvent(QMouseEvent *event);
   void mouseMoveEvent(QMouseEvent *event);
+  void focusOutEvent(QFocusEvent *event);
+  void leaveEvent(QEvent *event);
+private slots:
+  void timer_event();
+private:
+  int cursor_frame;
+  int cursor;
 
 };
 
@@ -198,6 +206,7 @@ class minimap_view:public fcwidget
   Q_OBJECT 
 public:
   minimap_view(QWidget * parent);
+  ~minimap_view();
   void paint(QPainter * painter, QPaintEvent * event);
   virtual void update_menu();
   void update_image();
@@ -247,6 +256,7 @@ class info_label : public fcwidget
 
 public:
   info_label(QWidget *parent);
+  ~info_label();
   void set_turn_info(QString);
   void set_time_info(QString);
   void set_eco_info(QString);
@@ -261,6 +271,7 @@ protected:
   void mousePressEvent(QMouseEvent *event);
   void mouseMoveEvent(QMouseEvent *event);
   void wheelEvent(QWheelEvent *event);
+  void leaveEvent (QEvent *event);
 private:
   void create_end_turn_pixmap();
   QRect end_button_area;
@@ -277,6 +288,7 @@ class unit_label:public fcwidget
   Q_OBJECT
   QPixmap *pix;
   QPixmap *arrow_pix;
+  QPixmap *tile_pix;
   QFont *ufont;
 public:
   unit_label(QWidget *parent);
@@ -295,6 +307,7 @@ private:
   QString unit_label1, unit_label2;
   bool highlight_pix;
   bool one_unit;
+  bool no_units;
   int w_width;
 };
 

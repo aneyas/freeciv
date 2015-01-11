@@ -42,7 +42,7 @@ void gui_load_theme(const char *directory, const char *theme_name)
   GtkCssProvider *css_provider;
   GError *error = NULL;
   char buf[strlen(directory) + strlen(theme_name) + 32];
-  /* Gtk theme is a directory containing gtk-3.0/gtkrc file */
+  /* Gtk theme is a directory containing gtk-3.0/gtk.css file */
   fc_snprintf(buf, sizeof(buf), "%s/%s/gtk-3.0/gtk.css", directory,
               theme_name);
   css_provider = gtk_css_provider_new();
@@ -65,13 +65,13 @@ void gui_clear_theme(void)
   bool theme_loaded;
 
   /* try to load user defined theme */
-  theme_loaded = load_theme(options.gui_gtk3_default_theme_name);
+  theme_loaded = load_theme(gui_gtk3_default_theme_name);
 
   /* no user defined theme loaded -> try to load Freeciv default theme */
   if (!theme_loaded) {
     theme_loaded = load_theme(FC_GTK3_DEFAULT_THEME_NAME);
     if (theme_loaded) {
-      sz_strlcpy(options.gui_gtk3_default_theme_name, FC_GTK3_DEFAULT_THEME_NAME);
+      sz_strlcpy(gui_gtk3_default_theme_name, FC_GTK3_DEFAULT_THEME_NAME);
     }
   }
     
@@ -131,7 +131,7 @@ char **get_gui_specific_themes_directories(int *count)
 /*****************************************************************************
   Return an array of names of usable themes in the given directory.
   Array size is stored in count.
-  Useable theme for gtk+ is a directory which contains file gtk-3.0/gtkrc.
+  Useable theme for gtk+ is a directory which contains file gtk-3.0/gtk.css.
   The caller is responsible for freeing the array and the names
 *****************************************************************************/
 char **get_useable_themes_in_directory(const char *directory, int *count)

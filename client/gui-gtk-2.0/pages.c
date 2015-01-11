@@ -157,6 +157,7 @@ static gboolean intro_expose(GtkWidget *w, GdkEventExpose *ev)
 {
   static PangoLayout *layout;
   static int width, height;
+  static bool left = FALSE;
 
   if (!layout) {
     char msgbuf[128];
@@ -167,9 +168,20 @@ static gboolean intro_expose(GtkWidget *w, GdkEventExpose *ev)
          pango_font_description_from_string("Sans Bold 10"));
 
     if (rev_ver == NULL) {
-      /* TRANS: "version 2.6.0, gui-gtk-2.0 client" */
-      fc_snprintf(msgbuf, sizeof(msgbuf), _("%s%s, %s client"),
-                  word_version(), VERSION_STRING, client_string);
+      rev_ver = fc_git_revision();
+
+      if (rev_ver == NULL) {
+        /* TRANS: "version 2.6.0, gui-gtk-2.0 client" */
+        fc_snprintf(msgbuf, sizeof(msgbuf), _("%s%s, %s client"),
+                    word_version(), VERSION_STRING, client_string);
+      } else {
+        /* TRANS: "version 2.6.0
+         *         commit: [modified] <git commit id>
+         *         gui-gtk-2.0 client" */
+        fc_snprintf(msgbuf, sizeof(msgbuf), _("%s%s\ncommit: %s\n%s client"),
+                    word_version(), VERSION_STRING, rev_ver, client_string);
+        left = TRUE;
+      }
     } else {
       /* TRANS: "version 2.6.0 (r25000), gui-gtk-2.0 client" */
       fc_snprintf(msgbuf, sizeof(msgbuf), _("%s%s (%s), %s client"),
@@ -183,7 +195,7 @@ static gboolean intro_expose(GtkWidget *w, GdkEventExpose *ev)
   gtk_draw_shadowed_string(w->window,
       w->style->black_gc,
       w->style->white_gc,
-      w->allocation.x + w->allocation.width - width - 4,
+      w->allocation.x + (left ? 4 : w->allocation.width - width - 4),
       w->allocation.y + w->allocation.height - height - 4,
       layout);
   return TRUE;
@@ -1194,7 +1206,7 @@ GtkWidget *create_network_page(void)
   gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw),
 				 GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
   gtk_container_add(GTK_CONTAINER(sw), view);
-  if (options.gui_gtk2_metaserver_tab_first) {
+  if (gui_gtk2_metaserver_tab_first) {
     gtk_notebook_prepend_page(GTK_NOTEBOOK(notebook), sw, label);
   } else {
     gtk_notebook_append_page(GTK_NOTEBOOK(notebook), sw, label);
@@ -1830,9 +1842,9 @@ static GtkWidget *create_conn_menu(struct player *pplayer,
     item = gtk_separator_menu_item_new();
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
 
-    for (level = 0; level < AI_LEVEL_COUNT; level++) {
+    for (level = 0; level < AI_LEVEL_LAST; level++) {
       if (is_settable_ai_level(level)) {
-        const char *level_name = ai_level_translated_name(level);
+        const char *level_name = ai_level_name(level);
         const char *level_cmd = ai_level_cmd(level);
 
         item = gtk_menu_item_new_with_label(level_name);
@@ -2301,7 +2313,7 @@ void real_conn_list_dialog_update(void)
           && !pplayer->is_connected) {
         /* TRANS: "<Novice AI>" */
         fc_snprintf(user_name, sizeof(user_name), _("<%s AI>"),
-                    ai_level_translated_name(pplayer->ai_common.skill_level));
+                    ai_level_name(pplayer->ai_common.skill_level));
       } else {
         sz_strlcpy(user_name, pplayer->username);
         if (access_level > ALLOW_BASIC) {
@@ -2546,10 +2558,10 @@ GtkWidget *create_start_page(void)
   GtkWidget *rs_entry;
   GtkTreeSelection *selection;
   enum ai_level level;
-  /* There's less than AI_LEVEL_COUNT entries as not all levels have
+  /* There's less than AI_LEVEL_LAST entries as not all levels have
      entries (that's the whole point of this array: index != value),
      but this is set safely to the max */
-  static enum ai_level levels[AI_LEVEL_COUNT];
+  static enum ai_level levels[AI_LEVEL_LAST];
   int i = 0;
 
   box = gtk_vbox_new(FALSE, 8);
@@ -2599,9 +2611,9 @@ GtkWidget *create_start_page(void)
 
   ai_lvl_combobox = gtk_combo_box_new_text();
 
-  for (level = 0; level < AI_LEVEL_COUNT; level++) {
+  for (level = 0; level < AI_LEVEL_LAST; level++) {
     if (is_settable_ai_level(level)) {
-      const char *level_name = ai_level_translated_name(level);
+      const char *level_name = ai_level_name(level);
 
       gtk_combo_box_insert_text(GTK_COMBO_BOX(ai_lvl_combobox), i, level_name);
       levels[i] = level;

@@ -24,6 +24,7 @@
 
 // Qt
 #include <QTabWidget>
+#include <QMap>
 
 // client
 #include "chatline_common.h"
@@ -48,10 +49,13 @@
 #include "canvas.h"
 #include "chatline.h"
 #include "dialogs.h"
+#include "gotodlg.h"
 #include "mapview.h"
+#include "messagewin.h"
 #include "menu.h"
 #include "pages.h"
 #include "ratesdlg.h"
+#include "voteinfo_bar.h"
 
 enum connection_state {
   LOGIN_TYPE,
@@ -60,15 +64,8 @@ enum connection_state {
   WAITING_TYPE
 };
 
-
-enum DOCK_WIDGETS {
-  OUTPUT_DOCK_WIDGET = 0,
-  MESSAGE_DOCK_WIDGET,
-  /* ADD NEXT DOCK WIDGETS HERE */
-  LAST_WIDGET
-};
-
 class MainWindow;
+class QCompleter;
 class QLabel;
 class QLineEdit;
 class QLineEdit;
@@ -80,9 +77,24 @@ class QSocketNotifier;
 class QDialog;
 class QApplication;
 class QTreeWidget;
-class QDockWidget;
 class QStatusBar;
 class QMainWindow;
+
+class fc_icons
+{
+  Q_DISABLE_COPY(fc_icons);
+
+private:
+  explicit fc_icons();
+  static fc_icons* m_instance;
+
+public:
+  static fc_icons* instance();
+  static void drop();
+  QIcon get_icon(const QString& id);
+  QString get_path(const QString& id);
+};
+
 
 class fc_game_tab_widget: public QTabWidget
 {
@@ -101,24 +113,24 @@ public:
   void set_font(QString name, QFont *qf);
   QFont* get_font(QString name);
   void init_fonts();
+  void release_fonts();
 };
 
 class fc_client : public QObject
 {
   Q_OBJECT
-
   QWidget *main_wdg;
   QWidget *pages[ (int) PAGE_GGZ + 1];
   QWidget *connect_lan;
   QWidget *connect_metaserver;
   QWidget *game_main_widget;
 
-  QVBoxLayout *ver_dock_layout;
   QGridLayout *central_layout;
   QGridLayout *pages_layout[PAGE_GGZ + 1];
 
   QTextEdit *output_window;
   QTextEdit *scenarios_view;
+  QLabel *scenarios_text;
 
   QLineEdit *connect_host_edit;
   QLineEdit *connect_port_edit;
@@ -148,15 +160,13 @@ class fc_client : public QObject
   QTimer* meta_scan_timer;
   QTimer* lan_scan_timer;
 
-  QDockWidget *dock_widget[ (int) LAST_WIDGET ];
   QStatusBar *status_bar;
   QSignalMapper *switch_page_mapper;
   QLabel *status_bar_label;
-  unit_select *unit_sel;
   info_tile *info_tile_wdg;
   choice_dialog *opened_dialog;
   int current_unit_id;
-  int current_unit_target_id[ATK_COUNT];
+  int current_unit_target_id;
 
 public:
   fc_client();
@@ -167,43 +177,54 @@ public:
   minimap_view *minimapview_wdg;
   unit_label *unitinfo_wdg;
   void add_server_source(int);
+  void remove_server_source();
 
   enum client_pages current_page();
 
   void append_output_window(const QString &);
-  void set_status_bar(QString);
-  int add_game_tab(QWidget *widget, QString title, int index);
+  void set_status_bar(QString str, int timeout = 2000);
+  int add_game_tab(QWidget *widget, QString title);
   void rm_game_tab(int index); /* doesn't delete widget */
   void update_start_page();
   void toggle_unit_sel_widget(struct tile *ptile);
   void update_unit_sel();
   void popup_tile_info(struct tile *ptile);
   void popdown_tile_info();
-  void set_current_unit(int curr, int target, action_target_kind tgt);
-  void get_current_unit(int *curr, int *target, action_target_kind tgt);
+  void set_current_unit(int curr, int target);
+  void get_current_unit(int *curr, int *target);
   void set_diplo_dialog(choice_dialog *widget);
+  void update_completer();
   choice_dialog *get_diplo_dialog();
 
   QMainWindow *main_window;
+  QCompleter *chat_completer;
+  QStringList chat_history;
+  int history_pos;
   mr_idle mr_idler;
   fc_font fc_fonts;
-  QTableWidget *messages_window;
   info_label *game_info_label;
   QWidget *central_wdg;
   mr_menu *menu_bar;
   fc_game_tab_widget *game_tab_widget;
-  int gimme_place();
+  messagewdg *msgwdg;
+  info_tab *infotab;
+  pregamevote *pre_vote;
+  unit_select *unit_sel;
+  xvote *x_vote;
+  goto_dialog *gtd;
+  QCursor *fc_cursors[CURSOR_LAST][NUM_CURSOR_FRAMES];
+  void gimme_place(QWidget* widget, QString str);
   int gimme_index_of(QString str);
-  void add_repo_dlg(QString str);
   void remove_repo_dlg(QString str);
   bool is_repo_dlg_open(QString str);
-  void remove_place(int index);
+  bool is_closing();
 
 private slots:
 
   void server_input(int sock);
   void chat();
   void quit();
+  void closing();
   void slot_lan_scan();
   void slot_meta_scan();
   void slot_connect();
@@ -215,6 +236,12 @@ private slots:
   void start_page_menu(QPoint);
   void slot_pick_nation();
   void send_command_to_server(const QString &);
+  void start_new_game();
+  void start_scenario();
+  void start_from_save();
+  void browse_saves();
+  void browse_scenarios();
+  void clear_status_bar();
 
 public slots:
   void switch_page(int i);
@@ -239,24 +266,25 @@ private:
   void update_server_list(enum server_scan_type,
                            const struct server_list *);
   bool check_server_scan (server_scan*);
-  void create_dock_widgets();
-  void hide_dock_widgets();
-  void show_dock_widget(int widget, bool show=true);
   void update_load_page(void);
+  void create_cursors(void);
   void update_scenarios_page(void);
   void set_connection_state(enum connection_state state);
   void handle_authentication_req(
     enum authentication_type type, const char *message);
   void update_obs_button();
+  void init();
 
   enum client_pages page;
-  QList<int> places;
-  QStringList opened_repo_dlgs;
+  QMap<QString, QWidget*> opened_repo_dlgs;
+  QStringList status_bar_queue;
+  QString current_file;
   bool send_new_aifill_to_server;
+  bool quitting;
 
 protected:
   void timerEvent(QTimerEvent *);
-
+  bool eventFilter(QObject *obj, QEvent *event);
 
 signals:
   void keyCaught(QKeyEvent *e);

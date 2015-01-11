@@ -59,7 +59,7 @@ def write_disclaimer(f):
 
 ''')
 
-def fc_open(name):
+def my_open(name):
     verbose("writing %s"%name)
     f=open(name,"w")
     write_disclaimer(f)
@@ -71,7 +71,7 @@ def get_choices(all):
             return [so_far]
         t0=so_far[:]
         t1=so_far[:]
-        t1.append(all[index])
+        t1.append(list(all)[index])
         return helper(helper,all,index+1,t1)+helper(helper,all,index+1,t0)
 
     result=helper(helper,all,0,[])
@@ -123,9 +123,10 @@ def parse_fields(str, types):
     typeinfo["dataio_type"],typeinfo["struct_type"]=mo.groups()
 
     if typeinfo["struct_type"]=="float":
-        mo=re.search("^float(\d+)$",typeinfo["dataio_type"])
+        mo=re.search("^(\D+)(\d+)$",typeinfo["dataio_type"])
         assert mo
-        typeinfo["float_factor"]=int(mo.group(1))
+        typeinfo["dataio_type"]=mo.group(1)
+        typeinfo["float_factor"]=int(mo.group(2))
 
     # analyze fields
     fields=[]
@@ -350,7 +351,7 @@ class Field:
             return "DIO_BV_PUT(&dout, packet->%(name)s);"%self.__dict__
 
         if self.struct_type=="float" and not self.is_array:
-            return "  dio_put_float(&dout, real_packet->%(name)s, %(float_factor)d);"%self.__dict__
+            return "  dio_put_%(dataio_type)s(&dout, real_packet->%(name)s, %(float_factor)d);"%self.__dict__
         
         if self.dataio_type in ["worklist"]:
             return "  dio_put_%(dataio_type)s(&dout, &real_packet->%(name)s);"%self.__dict__
@@ -374,9 +375,9 @@ class Field:
 
         elif self.struct_type=="float":
             if self.is_array==2:
-                c="  dio_put_float(&dout, real_packet->%(name)s[i][j], %(float_factor)d);"%self.__dict__
+                c="  dio_put_%(dataio_type)s(&dout, real_packet->%(name)s[i][j], %(float_factor)d);"%self.__dict__
             else:
-                c="  dio_put_float(&dout, real_packet->%(name)s[i], %(float_factor)d);"%self.__dict__
+                c="  dio_put_%(dataio_type)s(&dout, real_packet->%(name)s[i], %(float_factor)d);"%self.__dict__
         else:
             if self.is_array==2:
                 c="dio_put_%(dataio_type)s(&dout, real_packet->%(name)s[i][j]);"%self.__dict__
@@ -441,7 +442,7 @@ class Field:
     # Returns code which get this field.
     def get_get(self):
         if self.struct_type=="float" and not self.is_array:
-            return '''if (!dio_get_float(&din, &real_packet->%(name)s, %(float_factor)d)) {
+            return '''if (!dio_get_%(dataio_type)s(&din, &real_packet->%(name)s, %(float_factor)d)) {
   RECEIVE_PACKET_FIELD_ERROR(%(name)s);
 }'''%self.__dict__
         if self.dataio_type=="bitvector":
@@ -491,11 +492,11 @@ class Field:
     }'''%self.__dict__
         elif self.struct_type=="float":
             if self.is_array==2:
-                c='''if (!dio_get_float(&din, &real_packet->%(name)s[i][j], %(float_factor)d)) {
+                c='''if (!dio_get_%(dataio_type)s(&din, &real_packet->%(name)s[i][j], %(float_factor)d)) {
       RECEIVE_PACKET_FIELD_ERROR(%(name)s);
     }'''%self.__dict__
             else:
-                c='''if (!dio_get_float(&din, &real_packet->%(name)s[i], %(float_factor)d)) {
+                c='''if (!dio_get_%(dataio_type)s(&din, &real_packet->%(name)s[i], %(float_factor)d)) {
       RECEIVE_PACKET_FIELD_ERROR(%(name)s);
     }'''%self.__dict__
         elif self.is_array==2:
@@ -615,8 +616,8 @@ class Variant:
         if self.poscaps or self.negcaps:
             def f(cap):
                 return '(has_capability("%s", pc->capability) && has_capability("%s", our_capability))'%(cap,cap)
-            t=(map(lambda x,f=f: f(x),self.poscaps)+
-               map(lambda x,f=f: '!'+f(x),self.negcaps))
+            t=(list(map(lambda x,f=f: f(x),self.poscaps))+
+               list(map(lambda x,f=f: '!'+f(x),self.negcaps)))
             self.condition=" && ".join(t)
         else:
             self.condition="TRUE"
@@ -716,7 +717,7 @@ static char *stats_%(name)s_names[] = {%(names)s};
         if len(self.key_fields)==0:
             return "#define hash_%(name)s hash_const\n\n"%self.__dict__
         else:
-            intro='''static genhash_val_t hash_%(name)s(const void *vkey)
+            intro='''static genhash_val_t hash_%(name)s(const void *vkey, size_t num_buckets)
 {
 '''%self.__dict__
 
@@ -731,7 +732,7 @@ static char *stats_%(name)s_names[] = {%(names)s};
                 a="(%s << 8) ^ %s"%(keys[0], keys[1])
             else:
                 assert 0
-            body=body+('  return %s;\n'%a)
+            body=body+('  return ((%s) %% num_buckets);\n'%a)
             extro="}\n\n"
             return intro+body+extro
 
@@ -1021,7 +1022,7 @@ class Packet:
         self.type=mo.group(1)
         self.name=self.type.lower()
         self.type_number=int(mo.group(2))
-        assert 0<=self.type_number<=65535
+        assert 0<=self.type_number<=255
         dummy=mo.group(3)
 
         del lines[0]
@@ -1575,9 +1576,9 @@ def main():
     output_h_name=target_root+"/common/packets_gen.h"
 
     if lazy_overwrite:
-        output_h=fc_open(output_h_name+".tmp")
+        output_h=my_open(output_h_name+".tmp")
     else:
-        output_h=fc_open(output_h_name)
+        output_h=my_open(output_h_name)
 
     output_h.write('''
 #ifdef __cplusplus
@@ -1585,7 +1586,6 @@ extern "C" {
 #endif /* __cplusplus */
 
 /* common */
-#include "actions.h"
 #include "disaster.h"
 
 ''')
@@ -1613,9 +1613,9 @@ void *get_packet_from_connection_helper(struct connection *pc, enum packet_type 
     ### writing packets_gen.c
     output_c_name=target_root+"/common/packets_gen.c"
     if lazy_overwrite:
-        output_c=fc_open(output_c_name+".tmp")
+        output_c=my_open(output_c_name+".tmp")
     else:
-        output_c=fc_open(output_c_name)
+        output_c=my_open(output_c_name)
 
     output_c.write('''
 #ifdef HAVE_CONFIG_H
@@ -1640,7 +1640,7 @@ void *get_packet_from_connection_helper(struct connection *pc, enum packet_type 
 
 #include "packets.h"
 
-static genhash_val_t hash_const(const void *vkey)
+static genhash_val_t hash_const(const void *vkey, size_t num_buckets)
 {
   return 0;
 }
@@ -1692,7 +1692,7 @@ static int stats_total_sent;
                 open(i,"w").write(new)
             os.remove(i+".tmp")
 
-    f=fc_open(target_root+"/server/hand_gen.h")
+    f=my_open(target_root+"/server/hand_gen.h")
     f.write('''
 #ifndef FC__HAND_GEN_H
 #define FC__HAND_GEN_H
@@ -1736,7 +1736,7 @@ bool server_handle_packet(enum packet_type type, const void *packet,
 ''')
     f.close()
 
-    f=fc_open(target_root+"/client/packhand_gen.h")
+    f=my_open(target_root+"/client/packhand_gen.h")
     f.write('''
 #ifndef FC__PACKHAND_GEN_H
 #define FC__PACKHAND_GEN_H
@@ -1778,7 +1778,7 @@ bool client_handle_packet(enum packet_type type, const void *packet);
 ''')
     f.close()
 
-    f=fc_open(target_root+"/server/hand_gen.c")
+    f=my_open(target_root+"/server/hand_gen.c")
     f.write('''
 
 #ifdef HAVE_CONFIG_H
@@ -1834,7 +1834,7 @@ bool server_handle_packet(enum packet_type type, const void *packet,
 ''')
     f.close()
 
-    f=fc_open(target_root+"/client/packhand_gen.c")
+    f=my_open(target_root+"/client/packhand_gen.c")
     f.write('''
 
 #ifdef HAVE_CONFIG_H

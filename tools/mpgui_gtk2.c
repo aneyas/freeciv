@@ -163,7 +163,7 @@ static gboolean msg_main_thread(gpointer user_data)
 
   FC_FREE(data);
 
-  return G_SOURCE_REMOVE;
+  return FALSE;
 }
 
 /**************************************************************************
@@ -194,7 +194,7 @@ static gboolean pbar_main_thread(gpointer user_data)
 
   FC_FREE(data);
 
-  return G_SOURCE_REMOVE;
+  return FALSE;
 }
 
 /**************************************************************************
@@ -244,7 +244,7 @@ static gboolean versionlist_update_main_thread(gpointer user_data)
     } while (gtk_tree_model_iter_next(GTK_TREE_MODEL(main_store), &iter));
   }
 
-  return G_SOURCE_REMOVE;
+  return FALSE;
 }
 
 /**************************************************************************
@@ -445,7 +445,14 @@ static void modinst_setup_widgets(GtkWidget *toplevel)
   mbox = gtk_vbox_new(FALSE, 4);
 
   if (rev_ver == NULL) {
-    fc_snprintf(verbuf, sizeof(verbuf), "%s%s", word_version(), VERSION_STRING);
+    rev_ver = fc_git_revision();
+
+    if (rev_ver == NULL) {
+      fc_snprintf(verbuf, sizeof(verbuf), "%s%s", word_version(), VERSION_STRING);
+    } else {
+      fc_snprintf(verbuf, sizeof(verbuf), _("%s%s\ncommit: %s"),
+                  word_version(), VERSION_STRING, rev_ver);
+    }
   } else {
     fc_snprintf(verbuf, sizeof(verbuf), "%s%s (%s)", word_version(), VERSION_STRING,
                 rev_ver);

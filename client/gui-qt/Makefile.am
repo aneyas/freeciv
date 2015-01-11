@@ -23,7 +23,14 @@ MOC_FILES = \
 	meta_optiondlg.cpp	\
 	meta_citydlg.cpp	\
 	meta_cityrep.cpp	\
-	meta_plrdlg.cpp
+	meta_plrdlg.cpp		\
+	meta_diplodlg.cpp	\
+	meta_spaceshipdlg.cpp	\
+	meta_messagewin.cpp	\
+	meta_chatline.cpp	\
+	meta_messagedlg.cpp	\
+	meta_voteinfo_bar.cpp	\
+	meta_gotodlg.cpp
 
 libgui_qt_la_SOURCES = \
 	canvas.cpp	\

@@ -53,7 +53,8 @@ enum map_generator {
   MAPGEN_SCENARIO = 0,
   MAPGEN_RANDOM,
   MAPGEN_FRACTAL,
-  MAPGEN_ISLAND
+  MAPGEN_ISLAND,
+  MAPGEN_FAIR
 };
 
 enum map_startpos {
@@ -63,6 +64,14 @@ enum map_startpos {
   MAPSTARTPOS_ALL,              /* All players on a single continent. */
   MAPSTARTPOS_VARIABLE,         /* Depending on size of continents. */
 };
+
+#define SPECENUM_NAME team_placement
+#define SPECENUM_VALUE0 TEAM_PLACEMENT_DISABLED
+#define SPECENUM_VALUE1 TEAM_PLACEMENT_CLOSEST
+#define SPECENUM_VALUE2 TEAM_PLACEMENT_CONTINENT
+#define SPECENUM_VALUE3 TEAM_PLACEMENT_HORIZONTAL
+#define SPECENUM_VALUE4 TEAM_PLACEMENT_VERTICAL
+#include "specenum_gen.h"
 
 struct civ_map {
   int topology_id;
@@ -77,10 +86,6 @@ struct civ_map {
   struct startpos_hash *startpos_table;
 
   union {
-    struct {
-      /* Nothing yet. */
-    } client;
-
     struct {
       enum mapsize_type mapsize; /* how the map size is defined */
       int size; /* used to calculate [xy]size */
@@ -101,7 +106,10 @@ struct civ_map {
       bool ocean_resources;         /* Resources in the middle of the ocean */
       bool have_huts;
       bool have_rivers_overlay;	/* only applies if !have_resources */
+      enum team_placement team_placement;
     } server;
+
+    /* Add client side when needed */
   };
 };
 
@@ -129,7 +137,7 @@ static const bool C_PERCENT = TRUE;
 
 bool map_is_empty(void);
 void map_init(void);
-void map_init_topology(bool set_sizes);
+void map_init_topology(void);
 void map_allocate(void);
 void map_free(void);
 
@@ -295,11 +303,6 @@ struct iterator *map_startpos_iter_init(struct map_startpos_iter *iter);
 #define NATURAL_WIDTH (MAP_IS_ISOMETRIC ? 2 * map.xsize : map.xsize)
 #define NATURAL_HEIGHT map.ysize
 
-#define MAP_WIDTH  \
-  (MAP_IS_ISOMETRIC ? (map.xsize + map.ysize / 2) : map.xsize)
-#define MAP_HEIGHT \
-  (MAP_IS_ISOMETRIC ? (map.xsize + map.ysize / 2) : map.ysize)
-
 static inline int map_pos_to_index(int map_x, int map_y);
 
 /* index_to_map_pos(int *, int *, int) inverts map_pos_to_index */
@@ -353,13 +356,14 @@ bool is_tiles_adjacent(const struct tile *ptile0, const struct tile *ptile1);
 bool is_move_cardinal(const struct tile *src_tile,
 		      const struct tile *dst_tile);
 int map_move_cost_unit(struct unit *punit, const struct tile *ptile);
-int map_move_cost(const struct player *pplayer,
-                  const struct unit_type *punittype,
+int map_move_cost(const struct player *pplayer, const struct unit_class *pclass,
                   const struct tile *src_tile,
                   const struct tile *dst_tile);
 bool is_safe_ocean(const struct tile *ptile);
-bv_extras get_tile_infrastructure_set(const struct tile *ptile,
-                                      int *count);
+bv_special get_tile_infrastructure_set(const struct tile *ptile,
+					  int *count);
+bv_bases get_tile_pillageable_base_set(const struct tile *ptile, int *pcount);
+bv_roads get_tile_pillageable_road_set(const struct tile *ptile, int *pcount);
 
 bool can_channel_land(const struct tile *ptile);
 bool can_reclaim_ocean(const struct tile *ptile);
@@ -625,16 +629,18 @@ extern const int DIR_DY[8];
 
 FC_STATIC_ASSERT(MAP_MAX_SIZE * 1000 <= MAX_DBV_LENGTH,
                  map_too_big_for_bitvector);
+/* We communicate through the network with signed 32-bits integers. */
+FC_STATIC_ASSERT((long unsigned) MAP_MAX_SIZE * 1000
+                 < (long unsigned) 1 << 31,
+                 map_too_big_for_network);
 
 #define MAP_DEFAULT_TILESPERPLAYER      100
 #define MAP_MIN_TILESPERPLAYER            1
 #define MAP_MAX_TILESPERPLAYER         1000
 
-/* This defines the maximum linear size in _map_ coordinates. */
+/* This defines the maximum linear size in _native_ coordinates. */
 #define MAP_DEFAULT_LINEAR_SIZE  64
-/* 32 * 1024 is 2^15; thus, x*y is <= 2^15 * 2^15 = 2^30. This can be
- * represented by an signed int as required by the network protocol. */
-#define MAP_MAX_LINEAR_SIZE      (32 * 1024)
+#define MAP_MAX_LINEAR_SIZE      (MAP_MAX_SIZE * 1000 / MAP_MIN_LINEAR_SIZE)
 #define MAP_MIN_LINEAR_SIZE      16
 
 #define MAP_ORIGINAL_TOPO        TF_WRAPX
@@ -679,6 +685,8 @@ FC_STATIC_ASSERT(MAP_MAX_SIZE * 1000 <= MAX_DBV_LENGTH,
 #define MAP_DEFAULT_TEMPERATURE   50
 #define MAP_MIN_TEMPERATURE       0
 #define MAP_MAX_TEMPERATURE       100
+
+#define MAP_DEFAULT_TEAM_PLACEMENT  TEAM_PLACEMENT_CLOSEST
 
 /*
  * Inline function definitions.  These are at the bottom because they may use

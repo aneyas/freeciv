@@ -18,10 +18,21 @@ extern "C" {
 #include "menu_g.h"
 }
 
+#ifdef HAVE_CONFIG_H
+#include <fc_config.h>
+#endif
+
 // Qt
+#include <QDialog>
 #include <QMenuBar>
 
+// client
+#include "control.h"
+
+class QLabel;
+class QPushButton;
 class QSignalMapper;
+class QScrollArea;
 
 /** used for indicating menu about current option - for renaming 
  * and enabling disbaling */
@@ -51,12 +62,47 @@ enum munit {
   CONNECT_RAIL,
   CONNECT_IRRIGATION,
   GOTO_CITY,
+  AIRLIFT,
   BUILD_WONDER,
   ORDER_TRADEROUTE,
   ORDER_DIPLOMAT_DLG,
   NUKE,
   UPGRADE,
   SETTLER
+};
+
+/**************************************************************************
+  Class for filtering chosen units
+**************************************************************************/
+class unit_filter {
+public:
+  unit_filter();
+  void reset_activity();
+  void reset_other();
+  bool any_activity;
+  bool forified;
+  bool idle;
+  bool sentried;
+  bool any;
+  bool full_mp;
+  bool full_hp;
+};
+
+/**************************************************************************
+  Custom dialog to show information
+**************************************************************************/
+class fc_message_box : public QDialog
+{
+  Q_OBJECT
+
+public:
+  fc_message_box() {};
+  void info(QWidget *parent, const QString &title, const QString &mess);
+
+private:
+  QLabel *label;
+  QScrollArea *scroll;
+  QPushButton *ok_button;
 };
 
 /**************************************************************************
@@ -67,8 +113,12 @@ class mr_menu : public QMenuBar
   Q_OBJECT
   QMenu *menu;
   QMenu *gov_menu;
+  QMenu *filter_menu;
   QList<QAction*> gov_list;
+  QActionGroup *filter_act;
+  QActionGroup *filter_any;;
   QHash<munit, QAction*> menu_list;
+  unit_filter u_filter;
 public:
   mr_menu();
   void setup_menus();
@@ -77,10 +127,13 @@ public:
   void menus_sensitive();
   void rm_gov_menu();
   QAction *minimap_status;
+  QAction *chat_status;
+  QAction *messages_status;
 private slots:
   /* game menu */
   void local_options();
   void server_options();
+  void messages_options();
   void quit_game();
 
   /* help menu */
@@ -105,6 +158,7 @@ private slots:
   void slot_unit_sentry();
   void slot_unit_explore();
   void slot_unit_goto();
+  void slot_airlift();
   void slot_return_to_city();
   void slot_patrol();
   void slot_unsentry();
@@ -120,6 +174,7 @@ private slots:
   void slot_unit_fortify();
   void slot_unit_airbase();
   void slot_pillage();
+  void slot_action();
 
   /*used by view menu*/
   void slot_center_view();
@@ -145,6 +200,8 @@ private slots:
   void slot_done_moving();
   void slot_selection_dialog();
   void slot_wait();
+  void slot_filter();
+  void slot_filter_other();
 
   /*used by civilization menu */
   void slot_show_map();
@@ -156,12 +213,19 @@ private slots:
   void slot_show_research_tab();
   void slot_gov_change(const int &target);
   void revolution();
+  void slot_spaceship();
   void slot_demographics();
-  void slot_achievements();
   void slot_top_five();
   void slot_traveler();
+  void slot_show_chat();
+  void slot_show_messages();
 
 private:
+  void unit_select(struct unit_list *punits, 
+                   enum unit_select_type_mode seltype,
+                   enum unit_select_location_mode selloc);
+  void apply_filter(struct unit *punit);
+  void apply_2nd_filter(struct unit *punit);
   int gov_count;
   int gov_target;
   QSignalMapper *signal_gov_mapper;

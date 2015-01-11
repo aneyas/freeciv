@@ -17,11 +17,15 @@
 
 // Qt
 #include <QApplication>
+#include <QCompleter>
 #include <QMainWindow>
 #include <QLineEdit>
 #include <QStatusBar>
 #include <QTabBar>
 #include <QTextEdit>
+
+// client
+#include "connectdlg_common.h"
 
 // common
 #include "game.h"
@@ -29,17 +33,19 @@
 // gui-qt
 #include "fc_client.h"
 #include "optiondlg.h"
+#include "sprite.h"
 
 
 extern QApplication *qapp;
-
+fc_icons* fc_icons::m_instance = 0;
 /****************************************************************************
   Constructor
 ****************************************************************************/
 fc_client::fc_client() : QObject()
 {
-  struct rgbcolor *prgbcolor;
-
+#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
+  QTextCodec::setCodecForCStrings(QTextCodec::codecForName("UTF-8"));
+#endif
   /**
    * Somehow freeciv-client-common asks to switch to page when all widgets
    * haven't been created yet by Qt, even constructor finished job,
@@ -49,6 +55,7 @@ fc_client::fc_client() : QObject()
    */
   main_window = NULL;
   main_wdg = NULL;
+  chat_completer = NULL;
   connect_lan = NULL;
   connect_metaserver = NULL;
   central_layout = NULL;
@@ -76,33 +83,41 @@ fc_client::fc_client() : QObject()
   status_bar_label = NULL;
   menu_bar = NULL;
   mapview_wdg = NULL;
-  messages_window = NULL;
+  msgwdg = NULL;
+  infotab = NULL;
   game_info_label = NULL;
   central_wdg = NULL;
   game_tab_widget = NULL;
-  ver_dock_layout = NULL;
   start_players_tree = NULL;
   unit_sel = NULL;
   info_tile_wdg = NULL;
   opened_dialog = NULL;
   current_unit_id = -1;
-  current_unit_target_id[ATK_CITY] = -1;
-  current_unit_target_id[ATK_UNIT] = -1;
-
-  for (int i = 0; i < LAST_WIDGET; i++) {
-    dock_widget[i] = NULL;
-  }
-
+  current_unit_target_id = -1;
+  current_file = "";
+  status_bar_queue.clear();
+  quitting = false;
+  pre_vote = NULL;
+  x_vote = NULL;
+  gtd = NULL;
   for (int i = 0; i <= PAGE_GGZ; i++) {
     pages_layout[i] = NULL;
     pages[i] = NULL;
   }
+  init();
+}
+
+void fc_client::init()
+{
   main_window = new QMainWindow;
   central_wdg = new QWidget;
   central_layout = new QGridLayout;
+  chat_completer = new QCompleter;
+  central_layout->setContentsMargins(2, 2, 2, 2);
 
   // General part not related to any single page
-  create_dock_widgets();
+  history_pos = -1;
+  fc_fonts.init_fonts();
   menu_bar = new mr_menu();
   menu_bar->setup_menus();
   main_window->setMenuBar(menu_bar);
@@ -111,7 +126,7 @@ fc_client::fc_client() : QObject()
   status_bar_label->setAlignment(Qt::AlignCenter);
   status_bar->addWidget(status_bar_label, 1);
   set_status_bar(_("Welcome to Freeciv"));
-
+  create_cursors();
   switch_page_mapper = new QSignalMapper;
   // PAGE_MAIN
   pages[PAGE_MAIN] = new QWidget(central_wdg);
@@ -153,17 +168,9 @@ fc_client::fc_client() : QObject()
   central_layout->addLayout(pages_layout[PAGE_GAME], 1, 1);
   central_wdg->setLayout(central_layout);
   main_window->setCentralWidget(central_wdg);
-  main_window->addDockWidget(Qt::RightDockWidgetArea,
-                             dock_widget[ (int) OUTPUT_DOCK_WIDGET]);
-  main_window->addDockWidget(Qt::BottomDockWidgetArea,
-                             dock_widget[ (int) MESSAGE_DOCK_WIDGET]);
 
   connect(switch_page_mapper, SIGNAL(mapped( int)),
                 this, SLOT(switch_page(int)));
-  fc_fonts.init_fonts();
-  /* workaround for changing tileset from main page */
-  prgbcolor = rgbcolor_new(0,0,0);
-  game.plr_bg_color = prgbcolor;
   main_window->setVisible(true);
 }
 
@@ -172,6 +179,8 @@ fc_client::fc_client() : QObject()
 ****************************************************************************/
 fc_client::~fc_client()
 {
+  status_bar_queue.clear();
+  fc_fonts.release_fonts();
   delete main_window;
 }
 
@@ -181,7 +190,8 @@ fc_client::~fc_client()
 void fc_client::main(QApplication *qapp)
 {
 
-  qRegisterMetaType<QTextCursor> ("QTextCursor");
+  qRegisterMetaType<QTextCursor>("QTextCursor");
+  qRegisterMetaType<QTextBlock>("QTextBlock");
   fc_allocate_ow_mutex();
   real_output_window_append(_("This is Qt-client for Freeciv."), NULL, -1);
   fc_release_ow_mutex();
@@ -190,6 +200,7 @@ void fc_client::main(QApplication *qapp)
   set_client_state(C_S_DISCONNECTED);
 
   startTimer(TIMER_INTERVAL);
+  connect(qapp, SIGNAL(aboutToQuit()), this, SLOT(closing()));
   qapp->exec();
 
   free_mapcanvas_and_overview();
@@ -197,11 +208,31 @@ void fc_client::main(QApplication *qapp)
 }
 
 /****************************************************************************
+  Returns status if fc_client is being closed
+****************************************************************************/
+bool fc_client::is_closing()
+{
+  return quitting;
+}
+
+/****************************************************************************
+  Called when fc_client is going to quit
+****************************************************************************/
+void fc_client::closing()
+{
+  quitting = true;
+}
+
+
+/****************************************************************************
   Appends text to chat window
 ****************************************************************************/
 void fc_client::append_output_window(const QString &str)
 {
-  output_window->append(str);
+  if (output_window != NULL) {
+    output_window->append(str);
+    chat_line->setCompleter(chat_completer);
+  }
 }
 
 /****************************************************************************
@@ -228,10 +259,18 @@ void fc_client::switch_page(int new_pg)
   enum client_pages new_page;
 
   new_page = static_cast<client_pages>(new_pg);
+
+  if ((new_page == PAGE_SCENARIO || new_page == PAGE_LOAD)
+       && !is_server_running()) {
+    current_file = "";
+    client_start_server_and_set_page(new_page);
+    return;
+  }
+
+  if (page == PAGE_NETWORK){
+    destroy_server_scans();
+  }
   main_window->menuBar()->setVisible(false);
-  hide_dock_widgets();
-  ver_dock_layout->addWidget(output_window);
-  ver_dock_layout->addWidget(chat_line);
 
   for (int i = 0; i < PAGE_GGZ + 1; i++) {
     if (i == new_page) {
@@ -240,32 +279,33 @@ void fc_client::switch_page(int new_pg)
       show_children(pages_layout[i], false);
     }
   }
-
   page = new_page;
   switch (page) {
   case PAGE_MAIN:
-    show_dock_widget(static_cast<int>(OUTPUT_DOCK_WIDGET), true);
     break;
   case PAGE_START:
-    pages_layout[PAGE_START]->addWidget(chat_line, 5, 0, 1, 3);
-    pages_layout[PAGE_START]->addWidget(output_window,3,0,2,8);
+    pre_vote->hide();
+    voteinfo_gui_update();
     break;
   case PAGE_LOAD:
     update_load_page();
     break;
   case PAGE_GAME:
-    main_window->showMaximized();
+    if (fullscreen_mode){
+      gui()->main_window->showFullScreen();
+      gui()->mapview_wdg->showFullScreen();
+    } else {
+      main_window->showMaximized();
+    }
     main_window->menuBar()->setVisible(true);
-    show_dock_widget(static_cast<int>(OUTPUT_DOCK_WIDGET), true);
-    show_dock_widget(static_cast<int>(MESSAGE_DOCK_WIDGET), true);
     mapview_wdg->setFocus();
     center_on_something();
+    voteinfo_gui_update();
     break;
   case PAGE_SCENARIO:
     update_scenarios_page();
     break;
   case PAGE_NETWORK:
-    hide_dock_widgets();
     update_network_lists();
     connect_host_edit->setText(server_host);
     fc_snprintf(buf, sizeof(buf), "%d", server_port);
@@ -273,6 +313,11 @@ void fc_client::switch_page(int new_pg)
     connect_login_edit->setText(user_name);
     break;
   case PAGE_GGZ:
+  default:
+    if (client.conn.used) {
+      disconnect_from_server();
+    }
+    set_client_page(PAGE_MAIN);
     break;
   }
 }
@@ -292,7 +337,50 @@ void fc_client::add_server_source(int sock)
 {
   server_notifier = new QSocketNotifier(sock, QSocketNotifier::Read);
 
-  connect(server_notifier, SIGNAL(activated(int)), this, SLOT(server_input(int)));
+  connect(server_notifier, SIGNAL(activated(int)), this, 
+          SLOT(server_input(int)));
+}
+
+/****************************************************************************
+  Event handler
+****************************************************************************/
+bool fc_client::eventFilter(QObject *obj, QEvent *event)
+{
+  if (obj == chat_line) {
+    if (event->type() == QEvent::KeyPress) {
+      QKeyEvent *keyEvent = static_cast<QKeyEvent *>(event);
+      if (keyEvent->key() == Qt::Key_Up) {
+        history_pos++;
+        history_pos = qMin(chat_history.count(), history_pos);
+        if (history_pos < chat_history.count()) {
+          chat_line->setText(chat_history.at(history_pos));
+        }
+        if (history_pos == chat_history.count()) {
+          chat_line->setText("");
+        }
+        return true;
+      } else if (keyEvent->key() == Qt::Key_Down) {
+        history_pos--;
+        history_pos = qMax(-1, history_pos);
+        if (history_pos < chat_history.count() && history_pos != -1) {
+          chat_line->setText(chat_history.at(history_pos));
+        }
+        if (history_pos == -1) {
+          chat_line->setText("");
+        }
+        return true;
+      }
+    }
+  }
+  return QObject::eventFilter(obj, event);
+}
+
+/****************************************************************************
+  Removes notifier
+****************************************************************************/
+void fc_client::remove_server_source()
+{
+  delete server_notifier;
 }
 
 /****************************************************************************
@@ -309,11 +397,9 @@ void fc_client::server_input(int sock)
 void fc_client::chat()
 {
   send_chat(chat_line->text().toUtf8().data());
-  real_output_window_append(chat_line->text().toUtf8().data(), NULL, -1);
+  chat_history.prepend(chat_line->text());
   chat_line->clear();
 }
-
-
 
 /****************************************************************************
   Timer event handling
@@ -397,30 +483,17 @@ void fc_client::show_children(const QLayout* layout, bool show)
 /****************************************************************************
   Finds not used index on game_view_tab and returns it
 ****************************************************************************/
-int fc_client::gimme_place()
+void fc_client::gimme_place(QWidget* widget, QString str)
 {
-  int is_not_in;
+  QString x;
+  x = opened_repo_dlgs.key(widget);
 
-  for (int i = 1; i < 1000; i++) {
-    is_not_in = places.indexOf(i);
-
-    if (is_not_in == -1) {
-      places.append(i);
-      places.indexOf(i);
-      return i;
+      if (x.isEmpty()) {
+        opened_repo_dlgs.insert(str, widget);
+        return;
     }
-  }
-
   log_error("Failed to find place for new tab widget");
-  return 0;
-}
-
-/****************************************************************************
-  Removes given index from list of used indexes
-****************************************************************************/
-void fc_client::remove_place(int index)
-{
-  places.removeAll(index);
+  return;
 }
 
 /****************************************************************************
@@ -430,11 +503,11 @@ void fc_client::remove_place(int index)
 ****************************************************************************/
 bool fc_client::is_repo_dlg_open(QString str)
 {
-  int i;
+  QWidget *w;
 
-  i = opened_repo_dlgs.indexOf(str);
+  w = opened_repo_dlgs.value(str);
 
-  if (i == -1) {
+  if (w == NULL) {
     return false;
   }
 
@@ -447,10 +520,41 @@ bool fc_client::is_repo_dlg_open(QString str)
 int fc_client::gimme_index_of(QString str)
 {
   int i;
+  QWidget *w;
 
-  i = opened_repo_dlgs.indexOf(str);
+  w = opened_repo_dlgs.value(str);
+  i = game_tab_widget->indexOf(w);
+  return i;
+}
 
-  return places.at(i);
+/****************************************************************************
+  Updates autocompleter for chat widgets
+****************************************************************************/
+void fc_client::update_completer()
+{
+  QStringList wordlist;
+  QString str;
+
+  conn_list_iterate(game.est_connections, pconn) {
+    if (pconn->playing) {
+      wordlist << pconn->playing->name;
+      wordlist << pconn->playing->username;
+    } else {
+      wordlist << pconn->username;
+    }
+  } conn_list_iterate_end;
+  players_iterate (pplayer){
+    str = pplayer->name;
+    if (!wordlist.contains(str)){
+      wordlist << str;
+    }
+  } players_iterate_end
+  if (chat_completer != NULL) {
+    delete chat_completer;
+  }
+  chat_completer = new QCompleter(wordlist);
+  chat_completer->setCaseSensitivity(Qt::CaseInsensitive);
+  chat_completer->setCompletionMode(QCompleter::InlineCompletion);
 }
 
 /****************************************************************************
@@ -482,19 +586,11 @@ void fc_client::update_unit_sel()
 }
 
 /****************************************************************************
-  Adds new report dialog string to the list marking it as opened
-****************************************************************************/
-void fc_client::add_repo_dlg(QString str)
-{
-  opened_repo_dlgs.append(str);
-}
-
-/****************************************************************************
   Removes report dialog string from the list marking it as closed
 ****************************************************************************/
 void fc_client::remove_repo_dlg(QString str)
 {
-  opened_repo_dlgs.removeAll(str);
+  opened_repo_dlgs.remove(str);
 }
 
 /****************************************************************************
@@ -511,6 +607,26 @@ void fc_client::popup_client_options()
 void fc_client::popup_server_options()
 {
   option_dialog_popup(_("Set server options"), server_optset);
+}
+
+void fc_client::create_cursors(void)
+{
+  enum cursor_type curs;
+  int cursor;
+  QPixmap *pix;
+  int hot_x, hot_y;
+  struct sprite *sprite;
+  int frame;
+  QCursor *c;
+  for (cursor = 0; cursor < CURSOR_LAST; cursor++) {
+    for (frame = 0; frame < NUM_CURSOR_FRAMES; frame++) {
+      curs = static_cast<cursor_type>(cursor);
+      sprite = get_cursor_sprite(tileset, curs, &hot_x, &hot_y, frame);
+      pix = sprite->pm;
+      c = new QCursor(*pix, hot_x, hot_y);
+      fc_cursors[cursor][frame] = c;
+    }
+  }
 }
 
 /****************************************************************************
@@ -556,6 +672,17 @@ void fc_font::init_fonts()
 }
 
 /****************************************************************************
+  Deletes all fonts
+****************************************************************************/
+void fc_font::release_fonts()
+{
+  foreach (QFont *f, font_map) {
+    delete f;
+  }
+}
+
+
+/****************************************************************************
   Adds new font or overwrite old one
 ****************************************************************************/
 void fc_font::set_font(QString name, QFont * qf)
@@ -563,10 +690,62 @@ void fc_font::set_font(QString name, QFont * qf)
   font_map.insert(name,qf);
 }
 
+/****************************************************************************
+  Game tab widget constructor
+****************************************************************************/
 fc_game_tab_widget::fc_game_tab_widget(): QTabWidget()
 {
   connect(this, SIGNAL(currentChanged(int)), SLOT(restore_label_color(int)));
 }
+
+/****************************************************************************
+  Icon provider constructor
+****************************************************************************/
+fc_icons::fc_icons()
+{
+}
+
+/****************************************************************************
+  Returns instance of fc_icons
+****************************************************************************/
+fc_icons *fc_icons::instance()
+{
+  if (!m_instance)
+    m_instance = new fc_icons;
+  return m_instance;
+}
+
+/****************************************************************************
+  Deletes fc_icons instance
+****************************************************************************/
+void fc_icons::drop()
+{
+  if (m_instance) {
+    delete m_instance;
+    m_instance = 0;
+  }
+}
+
+/****************************************************************************
+  Returns icon by given name
+****************************************************************************/
+QIcon fc_icons::get_icon(const QString &id)
+{
+  return QIcon(fileinfoname(get_data_dirs(),
+                            QString("themes/gui-qt/oxygen/"
+                                    + id + ".png").toLocal8Bit().data()));
+}
+
+/****************************************************************************
+  Returns path for icon
+****************************************************************************/
+QString fc_icons::get_path(const QString &id)
+{
+  return fileinfoname(get_data_dirs(),
+                      QString("themes/gui-qt/oxygen/"
+                              + id + ".png").toLocal8Bit().data());
+}
+
 
 /****************************************************************************
   Restores black color of label

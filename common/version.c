@@ -77,8 +77,10 @@ const char *fc_svn_revision(void)
 {
 #if defined(SVNREV) && !defined(FC_SVNREV_OFF)
   static char buf[100];
+  bool translate = FC_SVNREV1[0] != '\0';
 
-  fc_snprintf(buf, sizeof(buf), "%s%s", _(FC_SVNREV1), FC_SVNREV2);
+  fc_snprintf(buf, sizeof(buf), "%s%s",
+              translate ? _(FC_SVNREV1) : FC_SVNREV1, FC_SVNREV2);
 
   return buf; /* Either revision, or modified revision */
 #else  /* FC_SVNREV_OFF */
@@ -94,8 +96,10 @@ const char *fc_git_revision(void)
 {
 #if defined(GITREV) && !defined(FC_GITREV_OFF)
   static char buf[100];
+  bool translate = FC_GITREV1[0] != '\0';
 
-  fc_snprintf(buf, sizeof(buf), "%s%s", _(FC_GITREV1), FC_GITREV2);
+  fc_snprintf(buf, sizeof(buf), "%s%s",
+              translate ? _(FC_GITREV1) : FC_GITREV1, FC_GITREV2);
 
   return buf; /* Either revision, or modified revision */
 #else  /* FC_GITREV_OFF */
@@ -170,4 +174,29 @@ const char *beta_message(void)
 const char *freeciv_motto(void)
 {
   return _("'Cause civilization should be free!");
+}
+
+/***************************************************************************
+  Return version string in a format suitable to be written to created
+  datafiles as human readable information.
+***************************************************************************/
+const char *freeciv_datafile_version(void)
+{
+  static char buf[500] = { '\0' };
+
+  if (buf[0] == '\0') {
+    const char *ver_rev;
+
+    ver_rev = fc_svn_revision();
+    if (ver_rev == NULL) {
+      ver_rev = fc_git_revision();
+    }
+    if (ver_rev != NULL) {
+      fc_snprintf(buf, sizeof(buf), "%s (%s)", VERSION_STRING, ver_rev);
+    } else {
+      fc_snprintf(buf, sizeof(buf), "%s", VERSION_STRING);
+    }
+  }
+
+  return buf;
 }

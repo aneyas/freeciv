@@ -24,6 +24,7 @@ extern "C" {
 
 // Qt
 #include <QDialog>
+#include <QMessageBox>
 #include <QVariant>
 
 // gui-qt
@@ -38,13 +39,32 @@ class QSignalMapper;
 class QTableView;
 class QTableWidget;
 class QTextEdit;
-class QToolBox;
 class QWidget;
 
 typedef void (*pfcn_void)(QVariant, QVariant);
-
-
+void update_nationset_combo();
 void popup_races_dialog(struct player *pplayer);
+
+/***************************************************************************
+ Dialog for goto popup
+***************************************************************************/
+class notify_goto : public QMessageBox
+{
+  Q_OBJECT
+  QPushButton *goto_but;
+  QPushButton *inspect_but;
+  QPushButton *close_but;
+  struct tile *gtile;
+public:
+  notify_goto(const char *headline, const char *lines,
+              const struct text_tag_list *tags, struct tile *ptile,
+              QWidget *parent);
+
+private slots:
+  void goto_tile();
+  void inspect_city();
+};
+
 /***************************************************************************
  Dialog for selecting nation, style and leader leader
 ***************************************************************************/
@@ -52,13 +72,14 @@ class races_dialog:public QDialog
 {
   Q_OBJECT
   QGridLayout *main_layout;
-  QToolBox *nation_tabs;
+  QTableWidget *nation_tabs;
   QList<QWidget*> *nations_tabs_list;
   QTableWidget *selected_nation_tabs;
   QComboBox *leader_name;
+  QComboBox *qnation_set;
   QRadioButton *is_male;
   QRadioButton *is_female;
-  QTableWidget *styles;
+  QTableWidget *city_styles;
   QTextEdit *description;
   QPushButton *ok_button;
   QPushButton *random_button;
@@ -66,11 +87,15 @@ class races_dialog:public QDialog
 public:
   races_dialog(struct player *pplayer, QWidget *parent = 0);
   ~races_dialog();
+  void refresh();
+  void update_nationset_combo();
 
 private slots:
   void set_index(int index);
   void nation_selected(const QItemSelection &sl, const QItemSelection &ds);
   void style_selected(const QItemSelection &sl, const QItemSelection &ds);
+  void group_selected(const QItemSelection &sl, const QItemSelection &ds);
+  void nationset_changed(int index);
   void leader_selected(int index);
   void ok_pressed();
   void cancel_pressed();
@@ -81,6 +106,7 @@ private:
   int selected_style;
   int selected_sex;
   struct player *tplayer;
+  int last_index;
 };
 
 /***************************************************************************
@@ -147,6 +173,25 @@ private:
   int highligh_num;
 };
 
+/**************************************************************************
+  Store data about a choice dialog button
+**************************************************************************/
+class choice_dialog_button_data: public QObject
+{
+  Q_OBJECT
+  QPushButton *button;
+  pfcn_void func;
+  QVariant data1, data2;
+public:
+  choice_dialog_button_data(QPushButton *button, pfcn_void func,
+                            QVariant data1, QVariant data2);
+  ~choice_dialog_button_data();
+  QPushButton *getButton();
+  pfcn_void getFunc();
+  QVariant getData1();
+  QVariant getData2();
+};
+
 /***************************************************************************
   Simple choice dialog, allowing choosing one of set actions
 ***************************************************************************/
@@ -157,15 +202,17 @@ class choice_dialog: public QWidget
   QList<QVariant> data1_list;
   QList<QVariant> data2_list;
   QSignalMapper *signal_mapper;
-  void (*run_on_close)(void);
+  QList<choice_dialog_button_data *> last_buttons_stack;
 public:
   choice_dialog(const QString title, const QString text,
-                QWidget *parent = NULL, void (*run_on_close)(void) = NULL);
+                QWidget *parent = NULL);
   ~choice_dialog();
   void set_layout();
   void add_item(QString title, pfcn_void func, QVariant data1, 
-                QVariant data2, QString tool_tip);
+                QVariant data2);
   void show_me();
+  void stack_button(const int button_number);
+  void unstack_all_buttons();
   QVBoxLayout *get_layout();
   QList<pfcn_void> func_list;
   int unit_id;

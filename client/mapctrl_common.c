@@ -169,11 +169,10 @@ static void define_tiles_within_rectangle(bool append)
     }
   }
 
-  if (!(options.separate_unit_selection && found_any_cities)
+  if (!(separate_unit_selection && found_any_cities)
       && unit_list_size(units) > 0) {
     if (!append) {
       struct unit *punit = unit_list_get(units, 0);
-
       unit_focus_set(punit);
       unit_list_remove(units, punit);
     }
@@ -625,7 +624,7 @@ void update_turn_done_button_state(void)
     if (waiting_for_end_turn
         || (NULL != client.conn.playing
             && client.conn.playing->ai_controlled
-            && !options.ai_manual_turn_done)) {
+            && !ai_manual_turn_done)) {
       send_turn_done();
     } else {
       update_turn_done_button(TRUE);
@@ -644,10 +643,12 @@ void update_line(int canvas_x, int canvas_y)
   case HOVER_GOTO:
   case HOVER_PATROL:
   case HOVER_CONNECT:
+  case HOVER_NUKE:
     ptile = canvas_pos_to_tile(canvas_x, canvas_y);
 
     is_valid_goto_draw_line(ptile);
-  default:
+  case HOVER_NONE:
+  case HOVER_PARADROP:
     break;
   };
 }
@@ -664,11 +665,13 @@ void overview_update_line(int overview_x, int overview_y)
   case HOVER_GOTO:
   case HOVER_PATROL:
   case HOVER_CONNECT:
+  case HOVER_NUKE:
     overview_to_map_pos(&x, &y, overview_x, overview_y);
     ptile = map_pos_to_tile(x, y);
 
     is_valid_goto_draw_line(ptile);
-  default:
+  case HOVER_NONE:
+  case HOVER_PARADROP:
     break;
   };
 }

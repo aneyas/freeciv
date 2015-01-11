@@ -2,7 +2,7 @@
 [spec]
 
 ; Format and options of this spec file:
-options = "+Freeciv-spec-Devel-2013.Feb.13"
+options = "+Freeciv-2.5-spec"
 
 [info]
 
@@ -518,5 +518,14 @@ tiles = { "row", "column", "tag"
   54,  5, "u.elephants_e"
   54,  6, "u.elephants_se"
   54,  7, "u.elephants_s"
+
+  55,  0, "u.refugee_sw"
+  55,  1, "u.refugee_w"
+  55,  2, "u.refugee_nw"
+  55,  3, "u.refugee_n"
+  55,  4, "u.refugee_ne"
+  55,  5, "u.refugee_e"
+  55,  6, "u.refugee_se"
+  55,  7, "u.refugee_s"
 
 }

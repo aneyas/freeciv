@@ -142,41 +142,37 @@ size_t secfile_insert_int_vec_full(struct section_file *secfile,
   secfile_insert_int_vec_full(secfile, values, dim, comment, TRUE,          \
                               path, ## __VA_ARGS__)
 
-struct section *secfile_insert_include(struct section_file *secfile,
-                                       const char *filename);
-
 struct entry *secfile_insert_str_full(struct section_file *secfile,
                                       const char *string,
                                       const char *comment,
                                       bool allow_replace, bool no_escape,
-                                      bool include,
                                       const char *path, ...)
-                                      fc__attribute((__format__(__printf__, 7, 8)));
+                                      fc__attribute((__format__(__printf__, 6, 7)));
 #define secfile_insert_str(secfile, string, path, ...)                      \
-  secfile_insert_str_full(secfile, string, NULL, FALSE, FALSE, FALSE,       \
+  secfile_insert_str_full(secfile, string, NULL, FALSE, FALSE,              \
                           path, ## __VA_ARGS__)
 #define secfile_insert_str_noescape(secfile, string, path, ...)             \
-  secfile_insert_str_full(secfile, string, NULL, FALSE, TRUE, FALSE,        \
+  secfile_insert_str_full(secfile, string, NULL, FALSE, TRUE,               \
                           path, ## __VA_ARGS__)
 #define secfile_insert_str_comment(secfile, string, comment, path, ...)     \
-  secfile_insert_str_full(secfile, string, comment, FALSE, TRUE, FALSE,     \
+  secfile_insert_str_full(secfile, string, comment, FALSE, TRUE,            \
                           path, ## __VA_ARGS__)
 #define secfile_insert_str_noescape_comment(secfile, string,                \
                                             comment, path, ...)             \
-  secfile_insert_str_full(secfile, string, comment, FALSE, TRUE, FALSE,     \
+  secfile_insert_str_full(secfile, string, comment, FALSE, TRUE,            \
                           path, ## __VA_ARGS__)
 #define secfile_replace_str(secfile, string, path, ...)                     \
-  secfile_insert_str_full(secfile, string, NULL, TRUE, FALSE, FALSE,        \
+  secfile_insert_str_full(secfile, string, NULL, TRUE, FALSE,               \
                           path, ## __VA_ARGS__)
 #define secfile_replace_str_noescape(secfile, string, path, ...)            \
-  secfile_insert_str_full(secfile, string, NULL, TRUE, TRUE, FALSE,         \
+  secfile_insert_str_full(secfile, string, NULL, TRUE, TRUE,                \
                           path, ## __VA_ARGS__)
 #define secfile_replace_str_comment(secfile, string, comment, path, ...)    \
-  secfile_insert_str_full(secfile, string, comment, TRUE, TRUE, FALSE,      \
+  secfile_insert_str_full(secfile, string, comment, TRUE, TRUE,             \
                           path, ## __VA_ARGS__)
 #define secfile_replace_str_noescape_comment(secfile, string,               \
                                              comment, path, ...)            \
-  secfile_insert_str_full(secfile, string, comment, TRUE, TRUE, FALSE,      \
+  secfile_insert_str_full(secfile, string, comment, TRUE, TRUE,             \
                           path, ## __VA_ARGS__)
 size_t secfile_insert_str_vec_full(struct section_file *secfile,
                                    const char *const *strings, size_t dim,
@@ -386,34 +382,43 @@ struct entry *secfile_entry_lookup(const struct section_file *secfile,
 
 bool secfile_lookup_bool(const struct section_file *secfile, bool *bval,
                          const char *path, ...)
+                         fc__warn_unused_result
                          fc__attribute((__format__ (__printf__, 3, 4)));
 bool secfile_lookup_bool_default(const struct section_file *secfile,
                                  bool def, const char *path, ...)
+                                 fc__warn_unused_result
                                  fc__attribute((__format__ (__printf__, 3, 4)));
 bool *secfile_lookup_bool_vec(const struct section_file *secfile,
                               size_t *dim, const char *path, ...)
+                              fc__warn_unused_result
                               fc__attribute((__format__ (__printf__, 3, 4)));
 
 bool secfile_lookup_int(const struct section_file *secfile, int *ival,
                         const char *path, ...)
+                        fc__warn_unused_result
                         fc__attribute((__format__ (__printf__, 3, 4)));
 int secfile_lookup_int_default(const struct section_file *secfile, int def,
                                const char *path, ...)
+                               fc__warn_unused_result
                                fc__attribute((__format__ (__printf__, 3, 4)));
 int secfile_lookup_int_def_min_max(const struct section_file *secfile,
                                 int defval, int minval, int maxval,
                                 const char *path, ...)
+                                fc__warn_unused_result
                                 fc__attribute((__format__ (__printf__, 5, 6)));
 int *secfile_lookup_int_vec(const struct section_file *secfile,
                             size_t *dim, const char *path, ...)
+                            fc__warn_unused_result
                             fc__attribute((__format__ (__printf__, 3, 4)));
 
 const char *secfile_lookup_str(const struct section_file *secfile,
                                const char *path, ...)
+                               fc__warn_unused_result
                                fc__attribute((__format__ (__printf__, 2, 3)));
 const char *secfile_lookup_str_default(const struct section_file *secfile,
                                        const char *def,
                                        const char *path, ...)
+                                       fc__warn_unused_result
                                        fc__attribute((__format__ (__printf__, 3, 4)));
 const char **secfile_lookup_str_vec(const struct section_file *secfile,
                                     size_t *dim, const char *path, ...)
@@ -424,12 +429,14 @@ bool secfile_lookup_plain_enum_full(const struct section_file *secfile,
                                     secfile_enum_is_valid_fn_t is_valid_fn,
                                     secfile_enum_by_name_fn_t by_name_fn,
                                     const char *path, ...)
+                                    fc__warn_unused_result
                                     fc__attribute((__format__ (__printf__, 5, 6)));
 bool secfile_lookup_bitwise_enum_full(const struct section_file *secfile,
                                       int *penumerator,
                                       secfile_enum_is_valid_fn_t is_valid_fn,
                                       secfile_enum_by_name_fn_t by_name_fn,
                                       const char *path, ...)
+                                      fc__warn_unused_result
                                       fc__attribute((__format__ (__printf__, 5, 6)));
 #define secfile_lookup_enum(secfile, enumerator, specenum_type, path, ...)  \
 (specenum_type##_is_bitwise()                                               \
@@ -452,6 +459,7 @@ int secfile_lookup_plain_enum_default_full(const struct section_file
                                            secfile_enum_by_name_fn_t
                                            by_name_fn,
                                            const char *path, ...)
+                                           fc__warn_unused_result
                                            fc__attribute((__format__ (__printf__, 5, 6)));
 int secfile_lookup_bitwise_enum_default_full(const struct section_file
                                              *secfile, int defval,
@@ -460,6 +468,7 @@ int secfile_lookup_bitwise_enum_default_full(const struct section_file
                                              secfile_enum_by_name_fn_t
                                              by_name_fn,
                                              const char *path, ...)
+                                             fc__warn_unused_result
                                              fc__attribute((__format__ (__printf__, 5, 6)));
 #define secfile_lookup_enum_default(secfile, defval, specenum_type,         \
                                     path, ...)                              \
@@ -483,6 +492,7 @@ int *secfile_lookup_plain_enum_vec_full(const struct section_file *secfile,
                                         secfile_enum_by_name_fn_t
                                         by_name_fn,
                                         const char *path, ...)
+                                        fc__warn_unused_result
                                         fc__attribute((__format__ (__printf__, 5, 6)));
 int *secfile_lookup_bitwise_enum_vec_full(const struct section_file *secfile,
                                           size_t *dim,
@@ -491,6 +501,7 @@ int *secfile_lookup_bitwise_enum_vec_full(const struct section_file *secfile,
                                           secfile_enum_by_name_fn_t
                                           by_name_fn,
                                           const char *path, ...)
+                                          fc__warn_unused_result
                                           fc__attribute((__format__ (__printf__, 5, 6)));
 #define secfile_lookup_enum_vec(secfile, dim, specenum_type,                \
                                 path, ...)                                  \
@@ -514,17 +525,20 @@ bool secfile_lookup_enum_data(const struct section_file *secfile,
                               int *pvalue, bool bitwise,
                               secfile_enum_name_data_fn_t name_fn,
                               secfile_data_t data, const char *path, ...)
+                              fc__warn_unused_result
                               fc__attribute((__format__ (__printf__, 6, 7)));
 int secfile_lookup_enum_default_data(const struct section_file *secfile,
                                      int defval, bool bitwise,
                                      secfile_enum_name_data_fn_t name_fn,
                                      secfile_data_t data,
                                      const char *path, ...)
+                                     fc__warn_unused_result
                                      fc__attribute((__format__ (__printf__, 6, 7)));
 int *secfile_lookup_enum_vec_data(const struct section_file *secfile,
                                   size_t *dim, bool bitwise,
                                   secfile_enum_name_data_fn_t name_fn,
                                   secfile_data_t data, const char *path, ...)
+                                  fc__warn_unused_result
                                   fc__attribute((__format__ (__printf__, 6, 7)));
 
 /* Sections functions. */
@@ -594,6 +608,9 @@ bool entry_str_get(const struct entry *pentry, const char **value);
 bool entry_str_set(struct entry *pentry, const char *value);
 bool entry_str_escaped(const struct entry *pentry);
 bool entry_str_set_escaped(struct entry *pentry, bool escaped);
+
+/* Validation functions */
+bool is_secfile_entry_name_valid(const char *name);
 
 #ifdef __cplusplus
 }

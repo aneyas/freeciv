@@ -59,6 +59,8 @@ static QPixmap *unit_pixmap;
 
 void reset_unit_table(void);
 static void populate_unit_pixmap_table(void);
+static void apply_font(struct option *poption);
+static void apply_city_font(struct option *poption);
 
 /****************************************************************************
   Return fc_client instance
@@ -75,8 +77,6 @@ class fc_client *gui()
 void qtg_set_city_names_font_sizes(int my_city_names_font_size,
                                    int my_city_productions_font_size)
 {
-  log_error("Unimplemented set_city_names_font_sizes.");
-  /* PORTME */
 }
 
 /**************************************************************************
@@ -95,23 +95,60 @@ int main(int argc, char **argv)
 }
 
 /**************************************************************************
+  Print extra usage information, including one line help on each option,
+  to stderr. 
+**************************************************************************/
+static void print_usage()
+{
+  /* add client-specific usage information here */
+  fc_fprintf(stderr,
+             _("This client accepts the standard Qt command-line options\n"
+               "after '--'. See the Qt documentation.\n\n"));
+
+  /* TRANS: No full stop after the URL, could cause confusion. */
+  fc_fprintf(stderr, _("Report bugs at %s\n"), BUG_URL);
+}
+
+/**************************************************************************
+  Search for gui-specic command line options, that are not handled by Qt
+  (QApplication). Returns true iff program is to be executed, and not
+  to exit after showing the results from option parsing. 
+**************************************************************************/
+static bool parse_options(int argc, char **argv)
+{
+  int i = 1;
+
+  while (i < argc) {
+    if (is_option("--help", argv[i])) {
+      print_usage();
+      return false;
+    }
+    i++;
+  }
+
+  return true;
+}
+
+/**************************************************************************
   The main loop for the UI.  This is called from main(), and when it
   exits the client will exit.
 **************************************************************************/
 void qtg_ui_main(int argc, char *argv[])
 {
-  qapp = new QApplication(argc, argv);
-  QPixmap *qpm = new QPixmap;
-  QIcon app_icon;
+  if (parse_options(argc, argv)) {
+    qapp = new QApplication(argc, argv);
+    QPixmap *qpm = new QPixmap;
+    QIcon app_icon;
 
-  tileset_init(tileset);
-  tileset_load_tiles(tileset);
-  populate_unit_pixmap_table();
-  qpm = get_icon_sprite(tileset, ICON_FREECIV)->pm;
-  app_icon = ::QIcon(*qpm);
-  qapp->setWindowIcon(app_icon);
-  freeciv_qt = new fc_client();
-  freeciv_qt->main(qapp);
+    tileset_init(tileset);
+    tileset_load_tiles(tileset);
+    populate_unit_pixmap_table();
+    qpm = get_icon_sprite(tileset, ICON_FREECIV)->pm;
+    app_icon = ::QIcon(*qpm);
+    qapp->setWindowIcon(app_icon);
+    freeciv_qt = new fc_client();
+    freeciv_qt->main(qapp);
+  }
 }
 
 /****************************************************************************
@@ -119,7 +156,24 @@ void qtg_ui_main(int argc, char *argv[])
 ****************************************************************************/
 void qtg_gui_options_extra_init()
 {
-  /* Nothing to do. */
+    struct option *poption;
+
+#define option_var_set_callback(var, callback)                              \
+  if ((poption = optset_option_by_name(client_optset, #var))) {             \
+    option_set_changed_callback(poption, callback);                         \
+  } else {                                                                  \
+    log_error("Didn't find option %s!", #var);                              \
+  }
+
+  option_var_set_callback(gui_qt_font_city_names,
+                          apply_font);
+  option_var_set_callback(gui_qt_font_city_productions,
+                          apply_font);
+  option_var_set_callback(gui_qt_font_reqtree_text,
+                          apply_font);
+  option_var_set_callback(gui_qt_font_city_label,
+                          apply_city_font);
+#undef option_var_set_callback
 }
 
 /**************************************************************************
@@ -167,7 +221,7 @@ void qtg_add_net_input(int sock)
 **************************************************************************/
 void qtg_remove_net_input()
 {
-  /* PORTME */
+  gui()->remove_server_source();
 }
 
 /**************************************************************************
@@ -222,7 +276,9 @@ void qtg_set_unit_icons_more_arrow(bool onoff)
 ****************************************************************************/
 void qtg_real_focus_units_changed(void)
 {
-  /* PORTME */
+  if (gui()->unit_sel != NULL) {
+    gui()->unit_sel->update_units();
+  }
 }
 
 /****************************************************************************
@@ -237,6 +293,48 @@ void qtg_add_idle_callback(void (callback)(void *), void *data)
   cb->callback = callback;
   cb->data = data;
   gui()->mr_idler.add_callback(cb);
+}
+
+/****************************************************************************
+  Change the given font.
+****************************************************************************/
+static void apply_font(struct option *poption)
+{
+  QFont *f;
+  QFont *remove_old;
+  QString s;
+
+  if (gui()) {
+    f = new QFont;
+    s = option_font_get(poption);
+    f->fromString(s);
+    s = option_name(poption);
+    remove_old = gui()->fc_fonts.get_font(s);
+    delete remove_old;
+    gui()->fc_fonts.set_font(s, f);
+    update_city_descriptions();
+  }
+}
+
+/****************************************************************************
+  Changes city label font
+****************************************************************************/
+void apply_city_font(option *poption)
+{
+  QFont *f;
+  QFont *remove_old;
+  QString s;
+
+  if (gui() && qtg_get_current_client_page() == PAGE_GAME) {
+    f = new QFont;
+    s = option_font_get(poption);
+    f->fromString(s);
+    s = option_name(poption);
+    remove_old = gui()->fc_fonts.get_font(s);
+    delete remove_old;
+    gui()->fc_fonts.set_font(s, f);
+    qtg_popdown_all_city_dialogs();
+  }
 }
 
 /****************************************************************************
@@ -316,13 +414,14 @@ void reset_unit_table(void)
 **************************************************************************/
 void popup_quit_dialog()
 {
-  QMessageBox ask;
+  QMessageBox ask(gui()->central_wdg);
   int ret;
 
   ask.setText(_("Are you sure you want to quit?"));
   ask.setStandardButtons(QMessageBox::Cancel | QMessageBox::Ok);
   ask.setDefaultButton(QMessageBox::Cancel);
   ask.setIcon(QMessageBox::Warning);
+  ask.setWindowTitle(_("Quit?"));
   ret = ask.exec();
 
   switch (ret) {
@@ -346,19 +445,4 @@ static void populate_unit_pixmap_table(void)
 {
   unit_pixmap = new QPixmap(tileset_unit_width(tileset), 
                             tileset_unit_height(tileset));
-}
-
-/**************************************************************************
-  Insert build information to help
-**************************************************************************/
-void qtg_insert_client_build_info(char *outbuf, size_t outlen)
-{
-  /* There's separate entry about Qt in help menu.
-   * Should we enable this regardless? As then to place to find such information
-   * would be standard over clients. */
-
-  /*
-  cat_snprintf(outbuf, outlen, _("\nBuilt against Qt %s, using %s"),
-               QT_VERSION_STR, qVersion());
-  */
 }
