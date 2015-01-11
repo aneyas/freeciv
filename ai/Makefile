@@ -505,7 +505,7 @@ top_build_prefix = ../
 top_builddir = ..
 top_srcdir = ..
 module_dirs = $(am__append_1) $(am__append_2) $(am__append_3) \
-	$(am__append_4) $(am__append_5) $(am__append_6) $(am__append_7)
+	$(am__append_4) $(am__append_5) $(am__append_6)
 AM_CPPFLAGS = -I$(top_srcdir)/utility -I$(top_srcdir)/common
 # AI module loading supported, but experimental modules not built
 SUBDIRS = $(module_dirs)

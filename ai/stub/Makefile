@@ -491,7 +491,7 @@ top_build_prefix = ../../
 top_builddir = ../..
 top_srcdir = ../..
 aimodule_LTLIBRARIES = fc_ai_stub.la
-AM_CPPFLAGS = -I$(top_srcdir)/utility -I$(top_srcdir)/common
+AM_CPPFLAGS = -I$(top_srcdir)/utility -I$(top_srcdir)/common -I$(top_srcdir)/common/aicore -I$(top_srcdir)/server/advisors -I$(top_srcdir)/ai/default
 fc_ai_stub_la_SOURCES = stubai.c
 fc_ai_stub_la_LDFLAGS = -module
 all: all-am
