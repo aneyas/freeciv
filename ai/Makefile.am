@@ -30,7 +30,7 @@ else
 endif
 endif
 
-SUBDIRS = $(module_dirs)
+SUBDIRS = $(module_dirs) smart
 
 noinst_LTLIBRARIES = libaicommon.la
 
