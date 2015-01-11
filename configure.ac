@@ -1487,6 +1487,7 @@ AC_CONFIG_FILES([Makefile
           ai/default/Makefile
           ai/classic/Makefile
           ai/stub/Makefile
+          ai/smart/Makefile
           ai/threaded/Makefile
 	  tests/Makefile
   	  win32/Makefile

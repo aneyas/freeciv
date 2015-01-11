@@ -30,8 +30,8 @@ Kernel configured for up to 4 processors.
 Processor type: i486 (Intel 80486)
 Processors active: 0 1 2 3
 Primary memory available: 4.00 gigabytes
-Default processor set: 207 tasks, 1024 threads, 4 processors
-Load average: 2.10, Mach factor: 2.33
+Default processor set: 195 tasks, 848 threads, 4 processors
+Load average: 1.00, Mach factor: 2.99
 /bin/machine           = unknown
 /usr/bin/oslevel       = unknown
 /bin/universe          = unknown
@@ -881,11 +881,11 @@ configure:19190: checking for iconv
 configure:19214: gcc -o conftest -g -O2  -DAI_MODULEDIR="\"${exec_prefix}/lib/fcai\""  conftest.c  >&5
 Undefined symbols for architecture x86_64:
   "_iconv", referenced from:
-      _main in conftest-67e4e2.o
+      _main in conftest-9d5acb.o
   "_iconv_close", referenced from:
-      _main in conftest-67e4e2.o
+      _main in conftest-9d5acb.o
   "_iconv_open", referenced from:
-      _main in conftest-67e4e2.o
+      _main in conftest-9d5acb.o
 ld: symbol(s) not found for architecture x86_64
 clang: error: linker command failed with exit code 1 (use -v to see invocation)
 configure:19214: $? = 1
@@ -2370,7 +2370,7 @@ configure:32134: checking for rl_completion_suppress_append in -lreadline
 configure:32159: gcc -o conftest -g -O2 -fsigned-char  -DAI_MODULEDIR="\"${exec_prefix}/lib/fcai\"" -DLOCALEDIR="\"${datarootdir}/locale\"" -DBINDIR="\"${exec_prefix}/bin\""  conftest.c -lreadline  -liconv -pthread >&5
 Undefined symbols for architecture x86_64:
   "_rl_completion_suppress_append", referenced from:
-      _main in conftest-43b7a0.o
+      _main in conftest-3b2634.o
 ld: symbol(s) not found for architecture x86_64
 clang: error: linker command failed with exit code 1 (use -v to see invocation)
 configure:32159: $? = 1
@@ -4275,7 +4275,7 @@ configure:33362: checking for _doprnt
 configure:33362: gcc -o conftest -g -O2 -fsigned-char  -DAI_MODULEDIR="\"${exec_prefix}/lib/fcai\"" -DLOCALEDIR="\"${datarootdir}/locale\"" -DBINDIR="\"${exec_prefix}/bin\""  conftest.c -liconv -pthread >&5
 Undefined symbols for architecture x86_64:
   "__doprnt", referenced from:
-      _main in conftest-0cf300.o
+      _main in conftest-7a320b.o
 ld: symbol(s) not found for architecture x86_64
 clang: error: linker command failed with exit code 1 (use -v to see invocation)
 configure:33362: $? = 1
@@ -4494,7 +4494,7 @@ configure:33467: checking for snooze
 configure:33467: gcc -o conftest -g -O2 -fsigned-char  -DAI_MODULEDIR="\"${exec_prefix}/lib/fcai\"" -DLOCALEDIR="\"${datarootdir}/locale\"" -DBINDIR="\"${exec_prefix}/bin\""  conftest.c -liconv -pthread >&5
 Undefined symbols for architecture x86_64:
   "_snooze", referenced from:
-      _main in conftest-cb0bab.o
+      _main in conftest-81d7ef.o
 ld: symbol(s) not found for architecture x86_64
 clang: error: linker command failed with exit code 1 (use -v to see invocation)
 configure:33467: $? = 1
@@ -4731,7 +4731,7 @@ configure:33467: checking for _strcoll
 configure:33467: gcc -o conftest -g -O2 -fsigned-char  -DAI_MODULEDIR="\"${exec_prefix}/lib/fcai\"" -DLOCALEDIR="\"${datarootdir}/locale\"" -DBINDIR="\"${exec_prefix}/bin\""  conftest.c -liconv -pthread >&5
 Undefined symbols for architecture x86_64:
   "__strcoll", referenced from:
-      _main in conftest-6ea004.o
+      _main in conftest-3f4bfd.o
 ld: symbol(s) not found for architecture x86_64
 clang: error: linker command failed with exit code 1 (use -v to see invocation)
 configure:33467: $? = 1
@@ -4908,7 +4908,7 @@ configure:33467: checking for stricoll
 configure:33467: gcc -o conftest -g -O2 -fsigned-char  -DAI_MODULEDIR="\"${exec_prefix}/lib/fcai\"" -DLOCALEDIR="\"${datarootdir}/locale\"" -DBINDIR="\"${exec_prefix}/bin\""  conftest.c -liconv -pthread >&5
 Undefined symbols for architecture x86_64:
   "_stricoll", referenced from:
-      _main in conftest-c2d47a.o
+      _main in conftest-92d2be.o
 ld: symbol(s) not found for architecture x86_64
 clang: error: linker command failed with exit code 1 (use -v to see invocation)
 configure:33467: $? = 1
@@ -5085,7 +5085,7 @@ configure:33467: checking for _stricoll
 configure:33467: gcc -o conftest -g -O2 -fsigned-char  -DAI_MODULEDIR="\"${exec_prefix}/lib/fcai\"" -DLOCALEDIR="\"${datarootdir}/locale\"" -DBINDIR="\"${exec_prefix}/bin\""  conftest.c -liconv -pthread >&5
 Undefined symbols for architecture x86_64:
   "__stricoll", referenced from:
-      _main in conftest-74c874.o
+      _main in conftest-2a20c7.o
 ld: symbol(s) not found for architecture x86_64
 clang: error: linker command failed with exit code 1 (use -v to see invocation)
 configure:33467: $? = 1
@@ -5262,7 +5262,7 @@ configure:33467: checking for strcasecoll
 configure:33467: gcc -o conftest -g -O2 -fsigned-char  -DAI_MODULEDIR="\"${exec_prefix}/lib/fcai\"" -DLOCALEDIR="\"${datarootdir}/locale\"" -DBINDIR="\"${exec_prefix}/bin\""  conftest.c -liconv -pthread >&5
 Undefined symbols for architecture x86_64:
   "_strcasecoll", referenced from:
-      _main in conftest-f523be.o
+      _main in conftest-016e2a.o
 ld: symbol(s) not found for architecture x86_64
 clang: error: linker command failed with exit code 1 (use -v to see invocation)
 configure:33467: $? = 1
