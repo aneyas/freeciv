@@ -150,22 +150,21 @@ const char *fc_ai_stub_capstr(void)
 **************************************************************************/
 bool fc_ai_stub_setup(struct ai_type *ai)
 {
+  ai = ai_type_alloc();
   classic_ai_set_self(ai);
-  strncpy(ai->name, "stub_classic", sizeof(ai->name));
+  strncpy(ai->name, "stub", sizeof(ai->name));
 
   ai->funcs.player_alloc = cai_player_alloc;
   ai->funcs.player_free = cai_player_free;
   ai->funcs.player_save = cai_player_save;
   ai->funcs.player_load = cai_player_load;
 
-
   ai->funcs.settler_reset = cai_auto_settler_reset;
   ai->funcs.settler_run = cai_auto_settler_run;
   ai->funcs.settler_cont = cai_auto_settler_cont;
 
-  ai->funcs.unit_move = NULL;
-  ai->funcs.unit_task = NULL;
-
+  //ai->funcs.unit_move = NULL;
+  //ai->funcs.refresh= NULL;
 
   return TRUE;
 }

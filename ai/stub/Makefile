@@ -149,7 +149,7 @@ AWK = awk
 BUG_URL = http://gna.org/projects/freeciv/
 CATALOGS = 
 CATOBJEXT = 
-CC = gcc
+CC = gcc -g -O0
 CCDEPMODE = depmode=gcc3
 CFLAGS = -Wall -Wpointer-arith -Wcast-align -g -O2 -fsigned-char
 CLIENT_LIBS =  -lm 
